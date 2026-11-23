@@ -1,0 +1,173 @@
+---
+title: "merge"
+format: html
+editor: visual
+---
+
+## Merge
+
+This script merges all 28,000+ raw data with reference to the SOP, producing a merged raw dataframe
+
+```{r}
+#!/usr/bin/env Rscript
+# merge_data.R
+# Merge the IMPC raw files into one table with one row per analysis.
+# Run from inside the DCDM_Group10 folder:
+#   Rscript merge_data.R
+# or in RStudio: setwd() to DCDM_Group10, then source("merge_data.R")
+#
+# Output:
+#   merged_raw_data.csv, merged_raw_data_log.txt
+# settings
+src      <- "group10_data"                 # folder with the raw files
+dst      <- "merged_raw_data.csv"          # merged output file
+log_file <- "merged_raw_data_log.txt"      # log file
+
+# SOP columns (these go first in the output)
+base_cols <- c("analysis_id", "gene_accession_id", "gene_symbol", "mouse_strain",
+               "mouse_life_stage", "parameter_id", "parameter_name", "pvalue")
+
+# raw field names that need renaming to the SOP names (+ one known typo)
+alias <- c(strain_name         = "mouse_strain",
+           parameter_stable_id = "parameter_id",
+           p_value             = "pvalue",
+           lacz_jeart          = "lacz_heart")
+
+# patterns for the 3 line formats found in the raw files
+re_quoted  <- '^"([^"]*)"\\s*,(.*)$'   # "key",value   (normal)
+re_plain   <- '^([^",]+),(.*)$'        # key,value     (no quotes)
+re_nocomma <- '^"([^"]+)"([^,].*)$'    # "key"value    (comma missing)
+
+# list all raw files
+start <- Sys.time()
+files <- list.files(src, pattern = "\\.csv$", full.names = TRUE)
+if (length(files) == 0) stop("No .csv files found in: ", src)
+
+# function to tidy a key: remove quotes/spaces, camelCase -> snake_case, lower case, rename
+clean_key <- function(k) {
+  k <- trimws(gsub('"', "", k, fixed = TRUE))
+  k <- tolower(gsub("([a-z0-9])([A-Z])", "\\1_\\2", k, perl = TRUE))
+  ifelse(k %in% names(alias), alias[k], k)
+}
+
+# function to remove the outer quotes of a value ("1" -> 1)
+unquote <- function(v) {
+  q <- grepl('^\\s*".*"\\s*$', v, perl = TRUE)
+  v[q] <- gsub('""', '"', sub('^\\s*"(.*)"\\s*$', "\\1", v[q], perl = TRUE), fixed = TRUE)
+  v
+}
+
+# function to read ONE raw file -> named vector of values + log lines
+read_one <- function(path) {
+  fname <- basename(path)
+  logs  <- character(0)
+  
+  # import lines, remove spaces and blank lines
+  lines <- trimws(readLines(path, warn = FALSE, encoding = "UTF-8"))
+  lines <- lines[nzchar(lines)]
+  
+  key <- rep(NA_character_, length(lines))
+  val <- rep(NA_character_, length(lines))
+  
+  # 1. normal lines: "key",value
+  m <- grepl(re_quoted, lines, perl = TRUE)
+  key[m] <- sub(re_quoted, "\\1", lines[m], perl = TRUE)
+  val[m] <- sub(re_quoted, "\\2", lines[m], perl = TRUE)
+  
+  # 2. lines without quotes: key,value
+  m <- is.na(key) & grepl(re_plain, lines, perl = TRUE)
+  key[m] <- sub(re_plain, "\\1", lines[m], perl = TRUE)
+  val[m] <- sub(re_plain, "\\2", lines[m], perl = TRUE)
+  
+  # 3. lines with a missing comma: "key"value -> repair and log
+  m <- is.na(key) & grepl(re_nocomma, lines, perl = TRUE)
+  if (any(m)) {
+    key[m] <- sub(re_nocomma, "\\1", lines[m], perl = TRUE)
+    val[m] <- sub(re_nocomma, "\\2", lines[m], perl = TRUE)
+    logs <- c(logs, sprintf("%s\tREPAIRED missing comma\t%s", fname, lines[m]))
+  }
+  
+  # 4. lines with no key at all -> skip and log
+  no_key <- is.na(key)
+  if (any(no_key)) logs <- c(logs, sprintf("%s\tSKIPPED line with no key\t%s", fname, lines[no_key]))
+  key <- key[!no_key]
+  val <- val[!no_key]
+  
+  # tidy keys and values
+  raw_key <- gsub('"', "", key, fixed = TRUE)
+  key <- clean_key(key)
+  val <- unquote(val)
+  
+  # log keys that were renamed (except the 3 expected SOP renames)
+  renamed <- raw_key != key & !(raw_key %in% c("strain_name", "parameter_stable_id", "p_value"))
+  if (any(renamed)) logs <- c(logs, sprintf("%s\tRENAMED key\t%s -> %s", fname, raw_key[renamed], key[renamed]))
+  
+  # same key twice in one file -> keep the first, log the rest
+  dup <- duplicated(key)
+  if (any(dup)) {
+    logs <- c(logs, sprintf("%s\tDUPLICATE key (first kept)\t%s", fname, key[dup]))
+    key <- key[!dup]
+    val <- val[!dup]
+  }
+  
+  list(vals = setNames(val, key), log = logs)
+}
+
+# read all files
+recs <- lapply(files, read_one)
+vals <- lapply(recs, `[[`, "vals")
+logs <- unlist(lapply(recs, `[[`, "log"), use.names = FALSE)
+
+# select all columns: SOP columns first, then the rest (allele_symbol, lacz_*) sorted
+all_keys <- unique(unlist(lapply(vals, names), use.names = FALSE))
+cols     <- c(base_cols, sort(setdiff(all_keys, base_cols)))
+
+# build the table: one row per file, NA where a field is missing
+out <- as.data.frame(do.call(rbind, lapply(vals, function(v) unname(v[cols]))),
+                     stringsAsFactors = FALSE)
+names(out) <- cols
+out$source_file <- basename(files)        # keep the file name so each row can be traced
+
+# integrity checks (logged only - fixing is done in the cleaning step)
+missing_base <- setdiff(base_cols, all_keys)
+if (length(missing_base)) logs <- c(logs, sprintf("ALL\tWARNING base column never found\t%s", missing_base))
+
+ids <- out$analysis_id
+id_from_file <- sub("(_[0-9]+)?\\.csv$", "", out$source_file)
+
+# analysis_id different from the file name
+mismatch <- !is.na(ids) & ids != id_from_file
+if (any(mismatch)) logs <- c(logs, sprintf("%s\tanalysis_id differs from filename\t%s",
+                                           out$source_file[mismatch], ids[mismatch]))
+# analysis_id missing
+no_id <- is.na(ids)
+if (any(no_id)) logs <- c(logs, sprintf("%s\tMISSING analysis_id", out$source_file[no_id]))
+
+# analysis_id appearing more than once
+dup_ids <- unique(ids[!is.na(ids) & duplicated(ids)])
+if (length(dup_ids)) logs <- c(logs, sprintf("ALL\tDUPLICATE analysis_id (%d rows)\t%s",
+                                             as.integer(table(ids)[dup_ids]), dup_ids))
+
+# save merged table
+write.csv(out, dst, row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+
+# save log (summary at the top, then every issue)
+summary_lines <- c(
+  sprintf("source dir      : %s", normalizePath(src)),
+  sprintf("output          : %s", dst),
+  sprintf("files read      : %d", length(files)),
+  sprintf("rows written    : %d", nrow(out)),
+  sprintf("columns         : %d (%s)", ncol(out), paste(names(out), collapse = ",")),
+  sprintf("log entries     : %d", length(logs)),
+  sprintf("duplicate ids   : %d", length(dup_ids)),
+  sprintf("seconds         : %.1f", as.numeric(difftime(Sys.time(), start, units = "secs"))),
+  "",
+  "file\tissue\tdetail",
+  logs
+)
+writeLines(summary_lines, log_file, useBytes = TRUE)
+
+# print summary
+cat(paste(summary_lines[1:8], collapse = "\n"), "\n")
+cat("Full log written to", log_file, "\n")
+```

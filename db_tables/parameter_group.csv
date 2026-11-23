@@ -1,0 +1,13 @@
+"group_id","group_name","rule","n_parameters"
+1,"weight","name contains 'weight'",81
+2,"images","name contains 'image'/'imaging'",47
+3,"brain","name contains 'brain' (fore/mid/hind-brain, brainstem)",48
+4,"blood","haematology / clinical chemistry / insulin procedures, or blood terms",278
+5,"eye","Eye Morphology procedure or eye structures",212
+6,"cardiovascular","ECG, echocardiography, heart weight procedures or heart terms",197
+7,"skeleton","X-ray / DEXA procedures or bone terms",283
+8,"behaviour","behavioural / neurological test procedures",378
+9,"hearing","Auditory Brain Stem Response procedure or ABR terms",66
+10,"metabolism","glucose tolerance, calorimetry, body composition or metabolic terms",92
+11,"immune","Immunophenotyping procedure or immune cell terms",671
+12,"embryo","embryo / placenta / viability procedures (E9.5-E18.5)",1079

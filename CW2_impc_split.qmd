@@ -1,0 +1,152 @@
+---
+title: "split"
+format: html
+editor: visual
+---
+
+## Split
+
+This script splits the cleaned data into two tables for the database: analysis and lacz_expression. The lacz\_\* columns are also reshaped from wide to long format (one row per analysis per tissue), so each value sits in its own row and missing tissues are not stored.
+
+The gene_symbol and parameter_name columns are removed from analysis table as they are already stored in the gene and parameter tables, which prevents repetition. Before removing them, the script checks that they match those tables exactly, so nothing is lost. For the 169 rows with no parameter_id, the name is kept in parameter_name_unlinked. Finally, it checks that analysis_id is unique and that every mgi_id and parameter_id links to an existing record.
+
+```{r}
+#!/usr/bin/env Rscript
+# split_analysis.R
+# Split cleaned_data.csv (one wide table) into two normalised tables:
+#   analysis         - one row per analysis (the core experimental data)
+#   lacz_expression  - one row per analysis per tissue (from the 11 lacz_* columns)
+#
+# Run AFTER data_cleaning.R and clean_metadata.R, from inside the DCDM_Group10 folder:
+#   Rscript split_analysis.R      or in RStudio: source("split_analysis.R")
+#
+# Outputs (in db_tables/):
+#   analysis.csv, lacz_expression.csv, split_log.csv
+#
+# Missing values: written as NA in the CSV, and become NULL when loaded into MySQL.
+# Base R only.
+
+# settings
+f_clean     <- "cleaned_data.csv"
+f_gene      <- "db_tables/gene.csv"
+f_parameter <- "db_tables/parameter.csv"
+out_dir     <- "db_tables"
+
+# log every step (saved at the end)
+split_log <- data.frame(step = character(), rows = integer(), detail = character(),
+                        stringsAsFactors = FALSE)
+log_step <- function(step, n, detail) {
+  split_log[nrow(split_log) + 1, ] <<- list(step, as.integer(n), detail)
+  message(sprintf("[%-10s] %7d  %s", step, as.integer(n), detail))
+}
+
+# import data (everything as text so nothing is converted by accident)
+clean     <- read.csv(f_clean,     colClasses = "character", na.strings = "NA", check.names = FALSE)
+gene      <- read.csv(f_gene,      colClasses = "character", na.strings = "NA")
+parameter <- read.csv(f_parameter, colClasses = "character", na.strings = "NA")
+log_step("import", nrow(clean), "rows read from cleaned_data.csv")
+
+# ---------------------------------------------------------------------------
+# 1. Check that dropping gene_symbol and parameter_name loses nothing
+#    (they must be exactly what the gene and parameter tables already hold)
+# ---------------------------------------------------------------------------
+# gene_symbol vs gene table (matched by MGI ID)
+gene_sym <- gene$gene_symbol[match(clean$gene_accession_id, gene$mgi_id)]
+bad_sym  <- sum(is.na(gene_sym) | gene_sym != clean$gene_symbol)
+if (bad_sym) stop(bad_sym, " rows have a gene_symbol that differs from the gene table")
+log_step("check", nrow(clean), "gene_symbol identical to gene table -> safe to drop")
+
+# parameter_name vs parameter table (matched by parameter ID; skip rows with no ID)
+has_pid  <- !is.na(clean$parameter_id)
+par_name <- parameter$parameter_name[match(clean$parameter_id[has_pid], parameter$parameter_id)]
+bad_name <- sum(is.na(par_name) | par_name != clean$parameter_name[has_pid])
+if (bad_name) stop(bad_name, " rows have a parameter_name that differs from the parameter table")
+log_step("check", sum(has_pid), "parameter_name identical to parameter table -> safe to drop")
+
+# rows with NO parameter_id still have a name - keep it so the information is not lost
+n_no_pid <- sum(!has_pid)
+log_step("check", n_no_pid, "rows with no parameter_id: name kept in analysis.parameter_name_unlinked")
+
+# ---------------------------------------------------------------------------
+# 2. analysis table
+# ---------------------------------------------------------------------------
+# select columns (gene_symbol and parameter_name dropped - stored in gene / parameter)
+analysis <- data.frame(
+  analysis_id      = clean$analysis_id,
+  mgi_id           = clean$gene_accession_id,
+  parameter_id     = clean$parameter_id,                              # NA allowed (169)
+  parameter_name_unlinked = ifelse(has_pid, NA, clean$parameter_name),  # only when no ID
+  mouse_strain     = clean$mouse_strain,
+  mouse_life_stage = clean$mouse_life_stage,                          # NA allowed (261)
+  pvalue           = as.numeric(clean$pvalue),                        # NA allowed (291)
+  allele_symbol    = clean$allele_symbol,                             # NA allowed (277)
+  source_file      = clean$source_file,
+  stringsAsFactors = FALSE
+)
+
+# primary key check: analysis_id unique and never missing
+if (anyNA(analysis$analysis_id) || anyDuplicated(analysis$analysis_id))
+  stop("analysis_id is missing or duplicated")
+
+# foreign key checks: every mgi_id in gene, every (non-missing) parameter_id in parameter
+if (any(!analysis$mgi_id %in% gene$mgi_id)) stop("mgi_id not found in gene table")
+if (any(!is.na(analysis$parameter_id) & !analysis$parameter_id %in% parameter$parameter_id))
+  stop("parameter_id not found in parameter table")
+log_step("analysis", nrow(analysis), "rows; PK unique, all FKs valid")
+
+# report missing values (kept as NA -> NULL in MySQL, so all data is stored)
+for (col in c("parameter_id", "mouse_life_stage", "pvalue", "allele_symbol")) {
+  log_step("missing", sum(is.na(analysis[[col]])), paste(col, "kept as NULL"))
+}
+
+# ---------------------------------------------------------------------------
+# 3. lacz_expression table (wide -> long)
+# ---------------------------------------------------------------------------
+# select all lacz_* columns
+lacz_cols <- grep("^lacz_", names(clean), value = TRUE)
+
+# stack them: one row per analysis per tissue
+lacz_expression <- data.frame(
+  analysis_id = rep(clean$analysis_id, times = length(lacz_cols)),
+  tissue      = rep(sub("^lacz_", "", lacz_cols), each = nrow(clean)),
+  expression  = unlist(clean[lacz_cols], use.names = FALSE),
+  stringsAsFactors = FALSE
+)
+n_all <- nrow(lacz_expression)
+
+# remove missing values (no row = no data for that tissue)
+lacz_expression <- lacz_expression[!is.na(lacz_expression$expression), ]
+log_step("lacz", n_all - nrow(lacz_expression), "missing tissue values not stored (no row)")
+
+# sort by analysis then tissue
+lacz_expression <- lacz_expression[order(lacz_expression$analysis_id, lacz_expression$tissue), ]
+rownames(lacz_expression) <- NULL
+
+# primary key check: (analysis_id, tissue) unique
+if (anyDuplicated(lacz_expression[c("analysis_id", "tissue")]))
+  stop("duplicate (analysis_id, tissue) pairs")
+log_step("lacz", nrow(lacz_expression),
+         sprintf("rows (%d tissues x %d analyses, minus missing)", length(lacz_cols), nrow(clean)))
+
+# ---------------------------------------------------------------------------
+# 4. Check nothing was lost: rebuild the original columns from the new tables
+# ---------------------------------------------------------------------------
+for (col in lacz_cols) {
+  t   <- sub("^lacz_", "", col)
+  sub_t <- lacz_expression[lacz_expression$tissue == t, ]
+  back <- sub_t$expression[match(clean$analysis_id, sub_t$analysis_id)]
+  if (!identical(back, clean[[col]])) stop("lacz rebuild failed for ", col)
+}
+log_step("check", length(lacz_cols), "lacz columns rebuilt from lacz_expression = identical to original")
+
+# ---------------------------------------------------------------------------
+# 5. Save
+# ---------------------------------------------------------------------------
+dir.create(out_dir, showWarnings = FALSE)
+write.csv(analysis,        file.path(out_dir, "analysis.csv"),        row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+write.csv(lacz_expression, file.path(out_dir, "lacz_expression.csv"), row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+write.csv(split_log, "split_log.csv", row.names = FALSE, fileEncoding = "UTF-8")
+
+message("\nDone: analysis (", nrow(analysis), " rows), lacz_expression (",
+        nrow(lacz_expression), " rows), log in split_log.csv")
+```

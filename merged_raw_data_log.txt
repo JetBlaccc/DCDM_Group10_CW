@@ -1,0 +1,88 @@
+source dir      : \\wsl.localhost\Ubuntu\home\jjetxyz\kcl\dcdm\DCDM_Group10\group10_data
+output          : merged_raw_data.csv
+files read      : 28495
+rows written    : 28495
+columns         : 21 (analysis_id,gene_accession_id,gene_symbol,mouse_strain,mouse_life_stage,parameter_id,parameter_name,pvalue,allele_symbol,lacz_blood,lacz_brain,lacz_colon,lacz_eye,lacz_heart,lacz_kidney,lacz_liver,lacz_lung,lacz_skeletal_muscle,lacz_skin,lacz_vascular_system,source_file)
+log entries     : 78
+duplicate ids   : 70
+seconds         : 564.3
+
+file	issue	detail
+an1002617512.csv	REPAIRED missing comma	"lacz_kidney""expression"
+an3265725976.csv	RENAMED key	parameterName -> parameter_name
+an3797698600.csv	SKIPPED line with no key	"no expression"
+an7422024571.csv	RENAMED key	laczEye -> lacz_eye
+an7422024571.csv	RENAMED key	laczJeart -> lacz_heart
+an9995988284.csv	RENAMED key	Mouse_life_stage -> mouse_life_stage
+an9995988284.csv	RENAMED key	analysisId -> analysis_id
+an9998901984.csv	analysis_id differs from filename	an99989019849999999999999999999
+ALL	DUPLICATE analysis_id (2 rows)	an1082731986
+ALL	DUPLICATE analysis_id (2 rows)	an1432214852
+ALL	DUPLICATE analysis_id (2 rows)	an1583027420
+ALL	DUPLICATE analysis_id (2 rows)	an1649726369
+ALL	DUPLICATE analysis_id (2 rows)	an1680115962
+ALL	DUPLICATE analysis_id (2 rows)	an1769484928
+ALL	DUPLICATE analysis_id (2 rows)	an1783789757
+ALL	DUPLICATE analysis_id (2 rows)	an1904359338
+ALL	DUPLICATE analysis_id (2 rows)	an1968765133
+ALL	DUPLICATE analysis_id (2 rows)	an2248389866
+ALL	DUPLICATE analysis_id (2 rows)	an2320994854
+ALL	DUPLICATE analysis_id (2 rows)	an2330376952
+ALL	DUPLICATE analysis_id (2 rows)	an2531977243
+ALL	DUPLICATE analysis_id (2 rows)	an2658048846
+ALL	DUPLICATE analysis_id (2 rows)	an2916033528
+ALL	DUPLICATE analysis_id (2 rows)	an3058001808
+ALL	DUPLICATE analysis_id (2 rows)	an3282745363
+ALL	DUPLICATE analysis_id (2 rows)	an3633307200
+ALL	DUPLICATE analysis_id (2 rows)	an3636000005
+ALL	DUPLICATE analysis_id (2 rows)	an3642064412
+ALL	DUPLICATE analysis_id (2 rows)	an3802420546
+ALL	DUPLICATE analysis_id (2 rows)	an3929076676
+ALL	DUPLICATE analysis_id (2 rows)	an3944087426
+ALL	DUPLICATE analysis_id (2 rows)	an4083686315
+ALL	DUPLICATE analysis_id (2 rows)	an4302086110
+ALL	DUPLICATE analysis_id (2 rows)	an4359160685
+ALL	DUPLICATE analysis_id (2 rows)	an4443004887
+ALL	DUPLICATE analysis_id (2 rows)	an4447232457
+ALL	DUPLICATE analysis_id (2 rows)	an4604227751
+ALL	DUPLICATE analysis_id (2 rows)	an4711405350
+ALL	DUPLICATE analysis_id (2 rows)	an4896254188
+ALL	DUPLICATE analysis_id (2 rows)	an4915088665
+ALL	DUPLICATE analysis_id (2 rows)	an4922070317
+ALL	DUPLICATE analysis_id (2 rows)	an5131900014
+ALL	DUPLICATE analysis_id (3 rows)	an5166112510
+ALL	DUPLICATE analysis_id (2 rows)	an5212765766
+ALL	DUPLICATE analysis_id (2 rows)	an5259224869
+ALL	DUPLICATE analysis_id (2 rows)	an5405179799
+ALL	DUPLICATE analysis_id (2 rows)	an5650518755
+ALL	DUPLICATE analysis_id (2 rows)	an5856350095
+ALL	DUPLICATE analysis_id (2 rows)	an5987608584
+ALL	DUPLICATE analysis_id (2 rows)	an6003191991
+ALL	DUPLICATE analysis_id (2 rows)	an6125213851
+ALL	DUPLICATE analysis_id (2 rows)	an6173853418
+ALL	DUPLICATE analysis_id (2 rows)	an6207834222
+ALL	DUPLICATE analysis_id (2 rows)	an6312131062
+ALL	DUPLICATE analysis_id (2 rows)	an6396332202
+ALL	DUPLICATE analysis_id (2 rows)	an6476946010
+ALL	DUPLICATE analysis_id (2 rows)	an6570019165
+ALL	DUPLICATE analysis_id (2 rows)	an6598607416
+ALL	DUPLICATE analysis_id (2 rows)	an6774778065
+ALL	DUPLICATE analysis_id (2 rows)	an6806301040
+ALL	DUPLICATE analysis_id (2 rows)	an6898576672
+ALL	DUPLICATE analysis_id (2 rows)	an6955861414
+ALL	DUPLICATE analysis_id (2 rows)	an6973094457
+ALL	DUPLICATE analysis_id (2 rows)	an6982599789
+ALL	DUPLICATE analysis_id (2 rows)	an7232921097
+ALL	DUPLICATE analysis_id (2 rows)	an7847945095
+ALL	DUPLICATE analysis_id (2 rows)	an7897286935
+ALL	DUPLICATE analysis_id (2 rows)	an7908203043
+ALL	DUPLICATE analysis_id (2 rows)	an8184978344
+ALL	DUPLICATE analysis_id (2 rows)	an8562127867
+ALL	DUPLICATE analysis_id (2 rows)	an8812627517
+ALL	DUPLICATE analysis_id (2 rows)	an8870749839
+ALL	DUPLICATE analysis_id (2 rows)	an8880919588
+ALL	DUPLICATE analysis_id (2 rows)	an8921909641
+ALL	DUPLICATE analysis_id (2 rows)	an9368882752
+ALL	DUPLICATE analysis_id (2 rows)	an9433579388
+ALL	DUPLICATE analysis_id (2 rows)	an9449441784
+ALL	DUPLICATE analysis_id (2 rows)	an9647455596
