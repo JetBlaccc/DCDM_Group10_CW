@@ -51,10 +51,8 @@ Standard identifiers (MGI for mouse genes, DOID for diseases, HGNC for human gen
 
 ## Limitations
 
--   The raw data cannot be shared, so only people with TRE access can re-run steps 1–4.
 -   Some values could not be recovered and are stored as `NULL` (counts are in the logs).
--   Parameter groups are assigned by name and procedure patterns and were not manually checked in full.
-
+  
 ## Software requirements
 
 R `[⚠ TODO: version]`, Quarto `[⚠ TODO: version]`, MySQL `[⚠ TODO: version]`; Shiny packages: `[⚠ TODO: list with versions]`. Operating system: `[⚠ TODO: e.g. macOS 15 / CREATE HPC]`.
