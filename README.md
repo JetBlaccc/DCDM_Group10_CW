@@ -47,7 +47,7 @@ shiny::runApp("[⚠ TODO: Shiny folder]")
 
 ## FAIR principles
 
-Standard identifiers (MGI for mouse genes, DOID for diseases, HGNC for human genes, Ensembl for homologs), open formats, logged provenance (`source_file`), and a public repository. Raw data access is controlled by the TRE.
+Standard identifiers (MGI for mouse genes, DOID for diseases, HGNC for human genes, Ensembl for homologs), open formats, logged provenance (`source_file`), and a public repository. The raw data was obtained through the King's TRE and is included so the pipeline can be re-run from the repository.
 
 ## Limitations
 
