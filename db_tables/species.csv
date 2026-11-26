@@ -1,0 +1,4 @@
+"species_id","common_name","scientific_name","ensembl_prefix"
+1,"mouse","Mus musculus","ENSMUSG"
+2,"human","Homo sapiens","ENSG"
+3,"macaque","Macaca mulatta","ENSMMUG"
