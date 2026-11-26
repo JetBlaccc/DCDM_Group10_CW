@@ -1,0 +1,390 @@
+---
+title: "Step 1 – Merging the Raw Files"
+author: "DCDM Group 10"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: false
+    code-fold: show
+    embed-resources: true
+execute:
+  dir: project
+editor: visual
+---
+
+## 1. Introduction
+
+This step combines the 28,495 raw IMPC files into a single table, with one row per analysis.
+
+During exploration (`00_data_exploration`), we found that the files all have the same shape, but several have structural problems that would break a simple merge: field names that differ from the SOP, field names written in the wrong format, a typo, a missing comma and a value with no field name. This step fixes those problems and records every fix in a log, so nothing is changed silently. The **values** themselves are left untouched until Step 2 (Cleaning, `02_data_cleaning`).
+
+| Input | Output |
+|----|----|
+| `group10_data/*.csv`, `reference_files/IMPC_SOP_2026.csv` | `merged_raw_data.csv`, `merged_raw_data_log.txt` |
+
+## 2. Setup
+
+The rules for the merge are based directly on the exploration findings (`00_data_exploration`, sections 3 and 5, summarised in section 7):
+
+-   The `alias` table lists field names that need to be swapped for their SOP version: `parameter_stable_id` → `parameter_id`, `p_value` → `pvalue`, and the typo `lacz_jeart` → `lacz_heart`.
+-   Field names that only differ in capitalisation or camelCase (such as `laczEye` or `analysisId`) are tidied automatically by the `clean_key()` function in section 4.
+-   The three patterns describe the different ways a line can be written in the raw files, including the version with a missing comma.
+
+The quick merge used in exploration relied on `read.csv()`, which cannot repair broken lines. Here, each file is read line by line instead, so broken lines can be detected and fixed.
+
+```{r}
+#| label: s01-setup
+# Input and output files
+src      <- "group10_data"                 # Folder with the raw files
+dst      <- "merged_raw_data.csv"          # Merged output file
+log_file <- "merged_raw_data_log.txt"      # Log file
+
+# The IMPC SOP, used to check the final field names
+sop <- read.csv("reference_files/IMPC_SOP_2026.csv", stringsAsFactors = FALSE)
+
+# The 8 main SOP fields - these become the first columns of the table
+base_cols <- c("analysis_id", "gene_accession_id", "gene_symbol", "strain_name",
+               "mouse_life_stage", "parameter_id", "parameter_name", "pvalue")
+
+# Field names that differ from the SOP: "name found in file" = "SOP name"
+alias <- c(mouse_strain        = "strain_name",   # Safety net, in case any file uses it
+           parameter_stable_id = "parameter_id",
+           p_value             = "pvalue",
+           lacz_jeart          = "lacz_heart")    # Typo (laczJeart)
+
+# The 3 ways a line can be written in the raw files
+re_quoted  <- '^"([^"]*)"\\s*,(.*)$'   # "field",value   (normal)
+re_plain   <- '^([^",]+),(.*)$'        # field,value     (no quotes)
+re_nocomma <- '^"([^"]+)"([^,].*)$'    # "field"value    (comma missing)
+```
+
+## 3. List the Raw Files
+
+We listed every CSV file in the raw data folder. If none are found, the script stops with a clear error instead of producing an empty table.
+
+```{r}
+#| label: s01-list-the-raw-files
+# Start the timer for the log
+start <- Sys.time()
+
+# List all CSV files and stop if there are none
+files <- list.files(src, pattern = "\\.csv$", full.names = TRUE)
+if (length(files) == 0) stop("No .csv files found in: ", src)
+
+length(files)
+```
+
+::: {.callout-note title="Finding"}
+`r length(files)` files were found, matching the number identified during exploration.
+:::
+
+## 4. Read Each File
+
+### 4.1 Reading Function
+
+We wrote a function that reads one raw file at a time and turns it into a set of field names and values:
+
+1.  Each line is matched to one of the three formats and split into a field name and a value.
+2.  Lines with a missing comma are repaired.
+3.  Lines with no field name are skipped, because there is no way to know which column the value belongs to.
+4.  Field names are tidied so they all match the SOP.
+5.  If a field appears twice in one file, the first value is kept.
+
+Every repair, skip and rename is written to the log.
+
+```{r}
+#| label: s01-read-each-file
+# Tidy a field name: remove quotes and spaces, camelCase -> snake_case,
+# lower case, then swap any alias for its SOP name
+clean_key <- function(k) {
+  k <- trimws(gsub('"', "", k, fixed = TRUE))
+  k <- tolower(gsub("([a-z0-9])([A-Z])", "\\1_\\2", k, perl = TRUE))
+  ifelse(k %in% names(alias), alias[k], k)
+}
+
+# Remove the quote marks around a value ("1" -> 1)
+unquote <- function(v) {
+  q <- grepl('^\\s*".*"\\s*$', v, perl = TRUE)
+  v[q] <- gsub('""', '"', sub('^\\s*"(.*)"\\s*$', "\\1", v[q], perl = TRUE), fixed = TRUE)
+  v
+}
+
+# Read ONE raw file -> its values (named by field) + any log entries
+read_one <- function(path) {
+  fname <- basename(path)
+  logs  <- character(0)
+
+  # Read the lines, trim spaces and drop blank lines
+  lines <- trimws(readLines(path, warn = FALSE, encoding = "UTF-8"))
+  lines <- lines[nzchar(lines)]
+
+  key <- rep(NA_character_, length(lines))
+  val <- rep(NA_character_, length(lines))
+
+  # 1. Normal lines: "field",value
+  m <- grepl(re_quoted, lines, perl = TRUE)
+  key[m] <- sub(re_quoted, "\\1", lines[m], perl = TRUE)
+  val[m] <- sub(re_quoted, "\\2", lines[m], perl = TRUE)
+
+  # 2. Lines without quotes: field,value
+  m <- is.na(key) & grepl(re_plain, lines, perl = TRUE)
+  key[m] <- sub(re_plain, "\\1", lines[m], perl = TRUE)
+  val[m] <- sub(re_plain, "\\2", lines[m], perl = TRUE)
+
+  # 3. Lines with a missing comma: "field"value -> repair and log
+  m <- is.na(key) & grepl(re_nocomma, lines, perl = TRUE)
+  if (any(m)) {
+    key[m] <- sub(re_nocomma, "\\1", lines[m], perl = TRUE)
+    val[m] <- sub(re_nocomma, "\\2", lines[m], perl = TRUE)
+    logs <- c(logs, sprintf("%s\tREPAIRED missing comma\t%s", fname, lines[m]))
+  }
+
+  # 4. Lines that matched no format (no field name) -> skip and log
+  no_key <- is.na(key)
+  if (any(no_key)) logs <- c(logs, sprintf("%s\tSKIPPED line with no field name\t%s", fname, lines[no_key]))
+  key <- key[!no_key]
+  val <- val[!no_key]
+
+  # Tidy the field names and values
+  raw_key <- gsub('"', "", key, fixed = TRUE)
+  key <- clean_key(key)
+  val <- unquote(val)
+
+  # Log renamed fields (the expected SOP renames are not logged, as they occur in every file)
+  renamed <- raw_key != key & !(raw_key %in% c("mouse_strain", "parameter_stable_id", "p_value"))
+  if (any(renamed)) logs <- c(logs, sprintf("%s\tRENAMED field\t%s -> %s", fname, raw_key[renamed], key[renamed]))
+
+  # Same field twice in one file -> keep the first and log the rest
+  dup <- duplicated(key)
+  if (any(dup)) {
+    logs <- c(logs, sprintf("%s\tDUPLICATE field (first kept)\t%s", fname, key[dup]))
+    key <- key[!dup]
+    val <- val[!dup]
+  }
+
+  list(vals = setNames(val, key), log = logs)
+}
+```
+
+### 4.2 Testing the Function
+
+Before running the function on all files, we tested it on the file with the missing comma (`an1002617512.csv`) to check that it repairs the line as expected.
+
+```{r}
+#| label: s01-test-read-one
+# Run the function on one problem file and show its log
+read_one(file.path(src, "an1002617512.csv"))$log
+```
+
+::: {.callout-note title="Finding"}
+The log shows that the missing comma was detected and repaired, so the function can be applied to all files.
+:::
+
+## 5. Combine into One Table
+
+With the function working, we applied it to every file. Each file becomes one row and each field becomes a column. Values are matched to columns by field name rather than by line position, so a file with its lines in a different order still lines up correctly. A `source_file` column records which file each row came from, so any row can be traced back.
+
+```{r}
+#| label: s01-combine-into-one-table
+# Read every file
+recs <- lapply(files, read_one)
+vals <- lapply(recs, `[[`, "vals")
+logs <- unlist(lapply(recs, `[[`, "log"), use.names = FALSE)
+
+# Column order: the SOP fields first, then the rest (allele_symbol, lacz_*) alphabetically
+all_keys <- unique(unlist(lapply(vals, names), use.names = FALSE))
+cols     <- c(base_cols, sort(setdiff(all_keys, base_cols)))
+
+# One row per file, with NA where a field is missing
+out <- as.data.frame(do.call(rbind, lapply(vals, function(v) unname(v[cols]))),
+                     stringsAsFactors = FALSE)
+names(out) <- cols
+
+# Keep the file name so each row can be traced
+out$source_file <- basename(files)
+```
+
+```{r}
+#| label: s01-view-combine-into-one-table
+# Size of the merged table and its first rows
+dim(out)
+head(out[, base_cols])
+```
+
+::: {.callout-note title="Finding"}
+The merged table has `r nrow(out)` rows and `r ncol(out)` columns: one row per file, and 20 fields plus `source_file`.
+:::
+
+## 6. Check the Analysis IDs
+
+Every analysis should have exactly one `analysis_id`. We checked for IDs that are missing, appear more than once, or do not match their file name. These are recorded in the log and dealt with in Step 2.
+
+```{r}
+#| label: s01-check-the-ids
+# Warn if an SOP field never appeared in any file
+missing_base <- setdiff(base_cols, all_keys)
+if (length(missing_base)) logs <- c(logs, sprintf("ALL\tWARNING SOP field never found\t%s", missing_base))
+
+ids <- out$analysis_id
+id_from_file <- sub("(_[0-9]+)?\\.csv$", "", out$source_file)
+
+# analysis_id different from the file name
+mismatch <- !is.na(ids) & ids != id_from_file
+if (any(mismatch)) logs <- c(logs, sprintf("%s\tanalysis_id differs from file name\t%s",
+                                           out$source_file[mismatch], ids[mismatch]))
+
+# analysis_id missing
+no_id <- is.na(ids)
+if (any(no_id)) logs <- c(logs, sprintf("%s\tMISSING analysis_id", out$source_file[no_id]))
+
+# analysis_id appearing more than once
+dup_ids <- unique(ids[!is.na(ids) & duplicated(ids)])
+if (length(dup_ids)) logs <- c(logs, sprintf("ALL\tDUPLICATE analysis_id (%d rows)\t%s",
+                                             as.integer(table(ids)[dup_ids]), dup_ids))
+```
+
+```{r}
+#| label: s01-view-check-the-ids
+# Number of log entries of each type
+table(vapply(strsplit(logs, "\t"), `[`, character(1), 2))
+```
+
+::: {.callout-note title="Finding"}
+In total, `r sum(grepl("REPAIRED", logs))` line(s) had a missing comma and were repaired, `r sum(grepl("SKIPPED", logs))` line(s) had no field name and were skipped, and `r sum(grepl("RENAMED", logs))` field name(s) were renamed to match the SOP.
+:::
+
+::: {.callout-warning title="Problem found"}
+`r length(dup_ids)` analysis IDs appear more than once. They are kept in the table for now and investigated in Step 2, to check whether they are exact copies or conflicting records.
+:::
+
+::: {.callout-warning title="Problem found"}
+`r sum(mismatch)` analysis ID(s) do not match their file name (`r paste(out$source_file[mismatch], collapse = ", ")`). The ID inside the file is corrupted, but the file name still holds the correct ID, so it is restored from the file name in Step 2.
+:::
+
+## 7. Validate the Merge
+
+Rather than assuming the merge worked, we checked the output against what we expected from the raw data and from the exploration findings.
+
+### 7.1 Rows and Columns
+
+Every file should become exactly one row. Each raw file has 20 fields, so with `source_file` the table should have 21 columns. During exploration, the structural problems created 7 extra columns; if they have all been fixed, there should be none now.
+
+```{r}
+#| label: s01-validate-shape
+# One row per file?
+nrow(out) == length(files)
+
+# 21 columns?
+ncol(out) == 21
+
+# Columns not in the SOP: only the individual lacz_* fields should remain
+setdiff(names(out), c(sop$dataField, "source_file"))
+```
+
+::: {.callout-note title="Finding"}
+Every file is represented by exactly one row, and no unexpected columns remain. The only names not listed individually in the SOP are the tissue fields, which the SOP covers as `lacz_*`.
+:::
+
+### 7.2 SOP Field Names
+
+Every SOP field should be present under its SOP name.
+
+```{r}
+#| label: s01-validate-sop-names
+# SOP fields missing from the table (should be empty)
+setdiff(c(base_cols, "allele_symbol"), names(out))
+```
+
+::: {.callout-note title="Finding"}
+All SOP fields are present under their SOP names.
+:::
+
+### 7.3 Problem Files from Exploration
+
+Each of the five problem files found during exploration should appear in the log.
+
+```{r}
+#| label: s01-validate-problem-files
+problem_files <- c("an1002617512.csv", "an3265725976.csv", "an3797698600.csv",
+                   "an7422024571.csv", "an9995988284.csv")
+
+# Log entries for these files
+grep(paste(problem_files, collapse = "|"), logs, value = TRUE)
+```
+
+::: {.callout-note title="Finding"}
+Each problem file was handled: the missing comma was repaired, the line with no field name was skipped, and the incorrectly written field names were renamed to their SOP versions.
+:::
+
+### 7.4 The Skipped Line
+
+In `an3797698600.csv`, the `lacz_liver` value had no field name, so it could not be assigned to a column. It should now be missing rather than placed in the wrong column.
+
+```{r}
+#| label: s01-validate-skipped
+# lacz_liver for this file (should be NA)
+out[out$source_file == "an3797698600.csv", "lacz_liver"]
+```
+
+::: {.callout-note title="Finding"}
+`lacz_liver` is missing for this file, so the unassignable value was not placed in the wrong column.
+:::
+
+## 8. Save
+
+The merged table and the log are saved so the next step can start from them.
+
+```{r}
+#| label: s01-save
+# Save the merged table
+write.csv(out, dst, row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+
+# Save the log: a summary at the top, then every issue
+summary_lines <- c(
+  sprintf("source dir      : %s", normalizePath(src)),
+  sprintf("output          : %s", dst),
+  sprintf("files read      : %d", length(files)),
+  sprintf("rows written    : %d", nrow(out)),
+  sprintf("columns         : %d (%s)", ncol(out), paste(names(out), collapse = ",")),
+  sprintf("log entries     : %d", length(logs)),
+  sprintf("duplicate ids   : %d", length(dup_ids)),
+  sprintf("seconds         : %.1f", as.numeric(difftime(Sys.time(), start, units = "secs"))),
+  "",
+  "file\tissue\tdetail",
+  logs
+)
+writeLines(summary_lines, log_file, useBytes = TRUE)
+
+# Print the summary
+cat(paste(summary_lines[1:8], collapse = "\n"), "\n")
+cat("Full log written to", log_file, "\n")
+```
+
+## 9. Reproducibility Record
+
+The MD5 hash acts as a fingerprint of the output file: if the script is run again on the same raw data and produces the same hash, the output is identical. The log is not hashed because it includes the run time, which changes every run. The R session details are recorded so the same package versions can be used again.
+
+```{r}
+#| label: s01-reproducibility-record
+# Fingerprint of the output file
+tools::md5sum(dst)
+
+# R version and packages used
+sessionInfo()
+```
+
+## 10. Summary and Next Step
+
+The raw files have been merged into one table with a consistent structure. Every structural problem found during exploration was repaired or recorded in the log, and the checks in section 7 confirm the result.
+
+::: {.callout-tip title="Next step"}
+The values inside the table have not been checked yet. In Step 2 (Cleaning, `02_data_cleaning`), working on `merged_raw_data.csv`, we will:
+
+-   check every value against the SOP rules, for example `pvalue` between 0 and 1, `mouse_life_stage` and `lacz_*` values from the allowed lists, and text lengths within the SOP limits;
+-   correct or remove the malformed values found during exploration, such as `no express)ion`, `Early adul+t` and `Fan(1`;
+-   investigate the missing values identified during exploration (`00_data_exploration`, section 6), to check whether they are genuinely missing or caused by formatting or data-entry errors;
+-   decide how to handle the `r length(dup_ids)` duplicated analysis IDs;
+-   check which length the real `analysis_id` values follow, because the SOP contradicts itself (12 characters in the remarks, 15 in the min/max columns).
+:::

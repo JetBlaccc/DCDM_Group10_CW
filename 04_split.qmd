@@ -1,0 +1,238 @@
+---
+title: "Step 4 – Splitting into the Final Tables"
+author: "DCDM Group 10"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: false
+    code-fold: show
+    embed-resources: true
+execute:
+  dir: project
+editor: visual
+---
+
+## 1. Introduction
+
+Step 2 (`02_data_cleaning`) produced a clean table with one row per analysis, and Step 3 (`03_metadata_cleaning`) created the supporting tables, including `gene` and `parameter`. The cleaned table still stores some information twice: gene symbols and parameter names are already in those tables, and the 11 `lacz_*` columns put one tissue in each column.
+
+This step splits the cleaned table into the last two normalised tables, `analysis` and `lacz_expression`, and checks the same key rules MySQL will enforce, so the data loads without errors. It also checks that no information is lost in the split.
+
+| Input | Output |
+|----|----|
+| `cleaned_data.csv`, `db_tables/gene.csv`, `db_tables/parameter.csv` | `db_tables/analysis.csv`, `db_tables/lacz_expression.csv`, `split_log.csv` |
+
+## 2. Setup
+
+We defined the input and output files and a log function, then read all three inputs. Everything is read as text, so nothing is converted by accident.
+
+```{r}
+#| label: s04-setup
+# Input files and output folder
+f_clean     <- "cleaned_data.csv"
+f_gene      <- "db_tables/gene.csv"
+f_parameter <- "db_tables/parameter.csv"
+out_dir     <- "db_tables"
+
+# Log every step (saved at the end)
+split_log <- data.frame(step = character(), rows = integer(), detail = character(),
+                        stringsAsFactors = FALSE)
+log_step <- function(step, n, detail) {
+  split_log[nrow(split_log) + 1, ] <<- list(step, as.integer(n), detail)
+  message(sprintf("[%-10s] %7d  %s", step, as.integer(n), detail))
+}
+
+# Import data (everything as text so nothing is converted by accident)
+clean     <- read.csv(f_clean,     colClasses = "character", na.strings = "NA", check.names = FALSE)
+gene      <- read.csv(f_gene,      colClasses = "character", na.strings = "NA")
+parameter <- read.csv(f_parameter, colClasses = "character", na.strings = "NA")
+log_step("import", nrow(clean), "rows read from cleaned_data.csv")
+```
+
+::: {.callout-note title="Finding"}
+`r nrow(clean)` analyses were read from `cleaned_data.csv`, together with `r nrow(gene)` genes and `r nrow(parameter)` parameters from Step 3.
+:::
+
+## 3. Check Before Dropping Columns
+
+`gene_symbol` and `parameter_name` are already stored in the `gene` and `parameter` tables, so keeping them in `analysis` would store the same fact twice. Before dropping them, we checked that they match those tables exactly, so nothing is lost. Rows with no `parameter_id` cannot be linked to the `parameter` table, so their name is kept in a separate column, `parameter_name_unlinked`.
+
+```{r}
+#| label: s04-check-before-dropping-columns
+# gene_symbol vs gene table (matched by MGI ID)
+gene_sym <- gene$gene_symbol[match(clean$gene_accession_id, gene$mgi_id)]
+bad_sym  <- sum(is.na(gene_sym) | gene_sym != clean$gene_symbol)
+if (bad_sym) stop(bad_sym, " rows have a gene_symbol that differs from the gene table")
+log_step("check", nrow(clean), "gene_symbol identical to gene table -> safe to drop")
+
+# parameter_name vs parameter table (matched by parameter ID; skip rows with no ID)
+has_pid  <- !is.na(clean$parameter_id)
+par_name <- parameter$parameter_name[match(clean$parameter_id[has_pid], parameter$parameter_id)]
+bad_name <- sum(is.na(par_name) | par_name != clean$parameter_name[has_pid])
+if (bad_name) stop(bad_name, " rows have a parameter_name that differs from the parameter table")
+log_step("check", sum(has_pid), "parameter_name identical to parameter table -> safe to drop")
+
+# Rows with NO parameter_id still have a name - keep it so the information is not lost
+n_no_pid <- sum(!has_pid)
+log_step("check", n_no_pid, "rows with no parameter_id: name kept in analysis.parameter_name_unlinked")
+```
+
+::: {.callout-note title="Finding"}
+Every gene symbol and parameter name matches the `gene` and `parameter` tables, so both columns can be dropped safely. `r n_no_pid` rows have no `parameter_id`; their names are kept in `parameter_name_unlinked`.
+:::
+
+## 4. Analysis Table
+
+The `analysis` table has one row per analysis. We checked its primary key (every `analysis_id` is present and unique) and its foreign keys (every `mgi_id` exists in `gene`, and every `parameter_id` exists in `parameter`). These are the same rules MySQL will enforce, so any problem is caught here rather than during loading. Missing values are kept as `NA`, which become `NULL` in MySQL, so all data is stored.
+
+```{r}
+#| label: s04-analysis
+# Select columns (gene_symbol and parameter_name dropped - stored in gene / parameter)
+analysis <- data.frame(
+  analysis_id      = clean$analysis_id,
+  mgi_id           = clean$gene_accession_id,
+  parameter_id     = clean$parameter_id,                              # NA allowed (169)
+  parameter_name_unlinked = ifelse(has_pid, NA, clean$parameter_name),  # Only when no ID
+  strain_name      = clean$strain_name,
+  mouse_life_stage = clean$mouse_life_stage,                          # NA allowed (261)
+  pvalue           = as.numeric(clean$pvalue),                        # NA allowed (291)
+  allele_symbol    = clean$allele_symbol,                             # NA allowed (277)
+  source_file      = clean$source_file,
+  stringsAsFactors = FALSE
+)
+
+# Primary key check: analysis_id unique and never missing
+if (anyNA(analysis$analysis_id) || anyDuplicated(analysis$analysis_id))
+  stop("analysis_id is missing or duplicated")
+
+# Foreign key checks: every mgi_id in gene, every (non-missing) parameter_id in parameter
+if (any(!analysis$mgi_id %in% gene$mgi_id)) stop("mgi_id not found in gene table")
+if (any(!is.na(analysis$parameter_id) & !analysis$parameter_id %in% parameter$parameter_id))
+  stop("parameter_id not found in parameter table")
+log_step("analysis", nrow(analysis), "rows; PK unique, all FKs valid")
+
+# Report missing values (kept as NA -> NULL in MySQL, so all data is stored)
+for (col in c("parameter_id", "mouse_life_stage", "pvalue", "allele_symbol")) {
+  log_step("missing", sum(is.na(analysis[[col]])), paste(col, "kept as NULL"))
+}
+```
+
+```{r}
+#| label: s04-view-analysis
+# First rows
+head(analysis)
+```
+
+::: {.callout-note title="Finding"}
+The `analysis` table has `r nrow(analysis)` rows. Every `analysis_id` is unique, and every `mgi_id` and `parameter_id` links to an existing row in `gene` and `parameter`.
+:::
+
+## 5. LacZ Expression Table
+
+In the cleaned table, each of the 11 tissues has its own `lacz_*` column. Adding a new tissue would then mean adding a new column to the table. Instead, the columns are turned into rows (wide to long): one row per analysis per tissue. A new tissue is then simply new rows, and missing values are not stored at all.
+
+```{r}
+#| label: s04-lacz-expression
+# Select all lacz_* columns
+lacz_cols <- grep("^lacz_", names(clean), value = TRUE)
+
+# Stack them: one row per analysis per tissue
+lacz_expression <- data.frame(
+  analysis_id = rep(clean$analysis_id, times = length(lacz_cols)),
+  tissue      = rep(sub("^lacz_", "", lacz_cols), each = nrow(clean)),
+  expression  = unlist(clean[lacz_cols], use.names = FALSE),
+  stringsAsFactors = FALSE
+)
+n_all <- nrow(lacz_expression)
+
+# Remove missing values (no row = no data for that tissue)
+lacz_expression <- lacz_expression[!is.na(lacz_expression$expression), ]
+log_step("lacz", n_all - nrow(lacz_expression), "missing tissue values not stored (no row)")
+
+# Sort by analysis then tissue
+lacz_expression <- lacz_expression[order(lacz_expression$analysis_id, lacz_expression$tissue), ]
+rownames(lacz_expression) <- NULL
+
+# Primary key check: (analysis_id, tissue) unique
+if (anyDuplicated(lacz_expression[c("analysis_id", "tissue")]))
+  stop("duplicate (analysis_id, tissue) pairs")
+log_step("lacz", nrow(lacz_expression),
+         sprintf("rows (%d tissues x %d analyses, minus missing)", length(lacz_cols), nrow(clean)))
+```
+
+```{r}
+#| label: s04-view-lacz-expression
+# First rows
+head(lacz_expression)
+```
+
+::: {.callout-note title="Finding"}
+The `r length(lacz_cols)` tissue columns became `r nrow(lacz_expression)` rows. `r n_all - nrow(lacz_expression)` missing values were not stored. Each combination of analysis and tissue appears only once.
+:::
+
+## 6. Check Nothing Was Lost
+
+To prove the split lost no information, each original `lacz_*` column is rebuilt from the new table and compared with the original. If any column differs, the script stops.
+
+```{r}
+#| label: s04-check-nothing-was-lost
+# Check every tissue column
+for (col in lacz_cols) {
+  # Rebuild one lacz_* column from the long table and compare it with the original
+  t   <- sub("^lacz_", "", col)
+  sub_t <- lacz_expression[lacz_expression$tissue == t, ]
+  back <- sub_t$expression[match(clean$analysis_id, sub_t$analysis_id)]
+  if (!identical(back, clean[[col]])) stop("lacz rebuild failed for ", col)
+}
+log_step("check", length(lacz_cols), "lacz columns rebuilt from lacz_expression = identical to original")
+```
+
+::: {.callout-note title="Finding"}
+All `r length(lacz_cols)` `lacz_*` columns were rebuilt from `lacz_expression` and are identical to the originals, so no information was lost.
+:::
+
+## 7. Save
+
+Both tables are saved in `db_tables/`, next to the tables from Step 3, together with the log.
+
+```{r}
+#| label: s04-save
+# Save both tables and the log
+dir.create(out_dir, showWarnings = FALSE)
+write.csv(analysis,        file.path(out_dir, "analysis.csv"),        row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+write.csv(lacz_expression, file.path(out_dir, "lacz_expression.csv"), row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+write.csv(split_log, "split_log.csv", row.names = FALSE, fileEncoding = "UTF-8")
+
+message("\nDone: analysis (", nrow(analysis), " rows), lacz_expression (",
+        nrow(lacz_expression), " rows), log in split_log.csv")
+```
+
+::: {.callout-note title="Finding"}
+`analysis.csv` (`r nrow(analysis)` rows) and `lacz_expression.csv` (`r nrow(lacz_expression)` rows) were saved in `db_tables/`, so all 16 tables needed for the database are now ready to load into MySQL.
+:::
+
+```{r}
+#| label: s04-view-save
+# Split log
+split_log
+```
+
+## 8. Reproducibility Record
+
+The MD5 hash acts as a fingerprint of each output file: if the script is run again on the same input and produces the same hashes, the outputs are identical. The R session details are recorded so the same package versions can be used again.
+
+```{r}
+#| label: s04-reproducibility-record
+tools::md5sum(c("db_tables/analysis.csv", "db_tables/lacz_expression.csv", "split_log.csv"))
+sessionInfo()
+```
+
+## 9. Summary and Next Step
+
+All the data is now in normalised tables in `db_tables/`: the analyses, their LacZ expression results and the supporting tables from Step 3. Every primary and foreign key has been checked, and the split was shown to lose no information.
+
+::: {.callout-tip title="Next step"}
+In Step 5, the tables in `db_tables/` are loaded into the MySQL database `impc_group10` using the scripts in `impc_group10_sql/`. The database is then used by the R Shiny dashboard (Step 6).
+:::

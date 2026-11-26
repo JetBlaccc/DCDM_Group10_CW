@@ -1,0 +1,601 @@
+---
+title: "Step 2 – Cleaning the Analysis Data"
+author: "DCDM Group 10"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: false
+    code-fold: show
+    embed-resources: true
+execute:
+  dir: project
+editor: visual
+---
+
+## 1. Introduction
+
+Step 1 (`01_merge`) produced one table with a consistent structure, but the values inside it have not been checked yet. During exploration (`00_data_exploration`), we saw malformed values such as `no express)ion`, `Early adul+t` and `Fan(1`, missing values in many fields, and duplicated analysis IDs.
+
+This step makes every value follow the IMPC Standard Operating Procedure (SOP). The checks follow the order of the module's five data-quality principles: **relevant**, **complete**, **consistent**, **free from errors** and **unique**. Values are only corrected when the correct value can be worked out from the data or a reference file; otherwise they are set to `NA`. Every change is counted and written to a log.
+
+| Input | Output |
+|----|----|
+| `merged_raw_data.csv` (+ disease and homology files as gene-symbol references) | `cleaned_data.csv`, `cleaned_data_log.csv` |
+
+## 2. Setup
+
+We defined the input and output files, a function that records every change in the log, and the allowed values copied from the SOP, so every check uses the same reference.
+
+```{r}
+#| label: s02-setup
+args          <- commandArgs(trailingOnly = TRUE)
+in_file       <- if (length(args) >= 1) args[1] else "merged_raw_data.csv"
+out_file      <- if (length(args) >= 2) args[2] else "cleaned_data.csv"
+disease_file  <- if (length(args) >= 3) args[3] else "reference_files/Disease_information.txt"
+homology_file <- if (length(args) >= 4) args[4] else "reference_files/bespokeTask_hml.txt"
+log_file      <- sub("\\.csv$", "_log.csv", out_file)
+
+change_log <- data.frame(step = character(), column = character(),
+                         rows_affected = integer(), detail = character(),
+                         stringsAsFactors = FALSE)
+
+log_step <- function(step, column, n, detail) {
+  change_log[nrow(change_log) + 1, ] <<- list(step, column, as.integer(n), detail)
+  message(sprintf("[%s] %-22s %6d rows  %s", step, column, as.integer(n), detail))
+}
+
+# Number of entries that differ between two versions of a column (NA-aware)
+n_changed <- function(old, new) {
+  sum(xor(is.na(old), is.na(new)) | (!is.na(old) & !is.na(new) & old != new))
+}
+
+# Most frequent value (ties -> first in sorted order, so results are reproducible)
+mode_of <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) return(NA_character_)
+  tab <- table(x)
+  names(tab)[which.max(tab)]
+}
+
+# SOP allowed values (IMPC_SOP_2026.csv)
+sop_strains <- c("B6Brd;B6Dnk;B6N-Tyr<c-Brd>", "C57BL/6Brd-Tyr<c-Brd>", "C57BL/6Dnk",
+                 "C57BL/6JTyr;C57BL/6N", "C57BL/6N", "C57BL/6NCrl", "C57BL/6NJ",
+                 "C57BL/6NTac", "C57BL/6NTacDen")
+sop_stages  <- c("E9.5", "E12.5", "E15.5", "E18.5",
+                 "Early adult", "Middle aged adult", "Late adult")
+sop_lacz    <- c("No data", "ambiguous", "expression", "imageOnly",
+                 "no expression", "tissue not available")
+```
+
+## 3. Read the Merged Data
+
+Everything is read as text, so R does not silently change any values (for example, turning IDs into numbers). An untouched copy, `raw`, is kept for before-and-after comparisons.
+
+```{r}
+#| label: s02-read
+data <- read.csv(in_file, colClasses = "character", na.strings = character(0),
+                 check.names = FALSE, encoding = "UTF-8")
+raw  <- data                                   # Untouched copy for comparisons
+message(sprintf("Read %s: %d rows x %d columns", in_file, nrow(data), ncol(data)))
+```
+
+```{r}
+#| label: s02-view-read
+# First rows before cleaning
+head(data[, 1:8])
+```
+
+::: {.callout-note title="Finding"}
+`r nrow(raw)` rows and `r ncol(raw)` columns were read from `merged_raw_data.csv`, matching the output of Step 1.
+:::
+
+## 4. Relevant: Required Fields
+
+Before cleaning, we checked that every field required by the SOP is present. If one is missing, the script stops rather than producing an incomplete table.
+
+```{r}
+#| label: s02-relevant
+lacz_cols <- grep("^lacz_", names(data), value = TRUE)
+sop_cols  <- c("analysis_id", "gene_accession_id", "gene_symbol", "strain_name",
+               "mouse_life_stage", "parameter_id", "parameter_name", "pvalue",
+               "allele_symbol")
+missing_cols <- setdiff(sop_cols, names(data))
+if (length(missing_cols)) stop("Missing SOP columns: ", paste(missing_cols, collapse = ", "))
+log_step("1 relevant", "all", nrow(data),
+         sprintf("all %d SOP fields present, plus %d lacz_* tissues", length(sop_cols), length(lacz_cols)))
+
+data_cols <- setdiff(names(data), "source_file")
+```
+
+::: {.callout-note title="Finding"}
+All `r length(sop_cols)` SOP fields are present, plus `r length(lacz_cols)` `lacz_*` tissue fields.
+:::
+
+## 5. Complete: One Meaning for "Missing"
+
+Missing values can be written in many ways (a blank, `"N/A"`, `"NULL"` and so on). We first removed spaces at the start and end of every value, then converted all placeholder text to a real `NA`, so "missing" always means one thing.
+
+```{r}
+#| label: s02-complete
+for (col in data_cols) {
+  old <- data[[col]]
+  data[[col]] <- trimws(data[[col]])
+  n <- n_changed(old, data[[col]])
+  if (n) log_step("2 complete", col, n, "leading/trailing whitespace removed")
+}
+
+na_tokens <- c("", "NA", "N/A", "NULL", "NaN", "na", "null")
+for (col in data_cols) {
+  hit <- !is.na(data[[col]]) & data[[col]] %in% na_tokens
+  if (any(hit)) {
+    data[[col]][hit] <- NA
+    log_step("2 complete", col, sum(hit), "placeholder text ('NA', '' ...) converted to real NA")
+  }
+}
+```
+
+```{r}
+#| label: s02-view-complete
+# Changes made in this section
+change_log[change_log$step == "2 complete", ]
+```
+
+::: {.callout-note title="Finding"}
+The table shows which columns contained extra spaces or placeholder text, and how many values were affected. After this step, every missing value is stored as `NA`.
+:::
+
+## 6. Consistent: Values in the SOP Format
+
+Each field was then brought into the format the SOP requires. Fields are handled one at a time below.
+
+### 6.1 Analysis and Gene IDs
+
+Broken or missing `analysis_id`s are restored from the file name, which still holds the correct ID. `gene_accession_id` is rebuilt as `MGI:<digits>` (for example, `:2142346` becomes `MGI:2142346`); IDs that cannot be repaired become `NA`. This ID is the key that links to the gene and disease tables in Step 3.
+
+```{r}
+#| label: s02-consistent-ids
+## 3a analysis_id: 'an' + 10 digits (SOP remark: 12 characters; its min/max of 15 is an SOP error)
+old <- data$analysis_id
+id_ok   <- !is.na(data$analysis_id) & grepl("^an[0-9]{10}$", data$analysis_id)
+from_fn <- sub("(_[0-9]+)?\\.csv$", "", data$source_file)
+fix     <- !id_ok & grepl("^an[0-9]{10}$", from_fn)
+data$analysis_id[fix] <- from_fn[fix]
+if (any(fix)) log_step("3 consistent", "analysis_id", sum(fix), "invalid/missing ID restored from source filename")
+
+## 3b gene_accession_id: MGI:<digits>
+old <- data$gene_accession_id
+x <- toupper(gsub("\\s", "", data$gene_accession_id))
+x <- sub("^(MGI)?:?([0-9]+)$", "MGI:\\2", x)
+data$gene_accession_id <- x
+n <- n_changed(old, x)
+if (n) log_step("3 consistent", "gene_accession_id", n, "repaired to MGI:<digits> (e.g. ':2142346' -> 'MGI:2142346')")
+bad <- !is.na(x) & !grepl("^MGI:[0-9]+$", x)
+if (any(bad)) { data$gene_accession_id[bad] <- NA
+log_step("3 consistent", "gene_accession_id", sum(bad), "unrepairable MGI ID set to NA") }
+```
+
+::: {.callout-note title="Finding"}
+`r sum(fix)` analysis IDs were restored from their file names. This also settles the question raised in exploration: the real IDs have 12 characters (`an` + 10 digits), so the SOP's minimum and maximum length of 15 is an error in the SOP.
+:::
+
+### 6.2 Gene Symbols
+
+Gene symbols contained noise such as `Db^n1` and `MYBL2`. The MGI ID decides which rows belong to the same gene, and each gene is given one symbol. Candidates come from both `gene_symbol` and the start of `allele_symbol`; a symbol confirmed by the disease or homology reference files is preferred, otherwise the most frequent one is used.
+
+```{r}
+#| label: s02-consistent-gene-symbol
+## 3c gene_symbol: ONE official symbol per MGI ID
+# Noise was injected into symbols (Db^n1, Aldo_c, MYBL2). The MGI ID is the stable key,
+# so every row of a gene gets the same symbol. Candidates come from gene_symbol AND the
+# allele prefix (Mybl2<tm1b...>) after removing illegal characters. The candidate that is
+# an official symbol in the Disease Ontology / Ensembl reference files is preferred;
+# otherwise the most frequent candidate is used.
+clean_sym <- function(x) {
+  x <- gsub("[^A-Za-z0-9.-]", "", x)
+  x <- gsub("^[.-]+|[.-]+$", "", x)
+  x[!is.na(x) & x == ""] <- NA
+  x
+}
+ref_symbols <- character(0)
+if (file.exists(disease_file)) {
+  dis <- read.delim(disease_file, header = FALSE, comment.char = "#", quote = "",
+                    colClasses = "character")
+  ref_symbols <- c(ref_symbols, dis[[7]])           # Column 7 = mouse gene symbol
+}
+if (file.exists(homology_file)) {
+  hom <- read.delim(homology_file, quote = "", colClasses = "character", check.names = FALSE)
+  ref_symbols <- c(ref_symbols, hom[["Gene name"]])
+}
+ref_symbols <- unique(ref_symbols[nzchar(ref_symbols)])
+if (!length(ref_symbols)) warning("No reference symbol files found in reference_files/ - using majority vote only")
+
+cand <- data.frame(mgi = rep(data$gene_accession_id, 2),
+                   s   = c(clean_sym(data$gene_symbol),
+                           clean_sym(sub("<.*$", "", data$allele_symbol))),
+                   stringsAsFactors = FALSE)
+cand <- cand[!is.na(cand$mgi) & !is.na(cand$s), ]
+
+pick_symbol <- function(s) {
+  tab <- sort(table(s), decreasing = TRUE)
+  in_ref <- names(tab)[names(tab) %in% ref_symbols]
+  if (length(in_ref)) return(in_ref[1])
+  best <- names(tab)[1]
+  # SOP: title format. Upper-case-only names (MUC5AC) -> Muc5ac, but keep
+  # accession-style symbols such as AI837181 that are officially upper case.
+  if (grepl("^[A-Z][A-Z0-9]+$", best) && !grepl("[0-9]{5,}", best))
+    best <- paste0(substr(best, 1, 1), tolower(substring(best, 2)))
+  best
+}
+canon_symbol <- tapply(cand$s, cand$mgi, pick_symbol)
+n_ref <- sum(canon_symbol %in% ref_symbols)
+
+old <- data$gene_symbol
+data$gene_symbol <- unname(canon_symbol[data$gene_accession_id])
+log_step("3 consistent", "gene_symbol", n_changed(old, data$gene_symbol),
+         sprintf("one symbol per MGI ID (%d of %d genes confirmed by reference files)",
+                 n_ref, length(canon_symbol)))
+multi <- tapply(data$gene_accession_id, data$gene_symbol, function(v) length(unique(v[!is.na(v)])))
+if (any(multi > 1, na.rm = TRUE))
+  log_step("3 consistent", "gene_symbol", sum(multi > 1, na.rm = TRUE),
+           paste("symbols shared by >1 MGI ID (kept, flagged):", paste(names(multi)[which(multi > 1)], collapse = ", ")))
+```
+
+```{r}
+#| label: s02-view-consistent-gene-symbol
+# Examples of noisy symbols before cleaning
+head(unique(raw$gene_symbol[grepl("[^A-Za-z0-9.-]", raw$gene_symbol)]), 10)
+```
+
+::: {.callout-note title="Finding"}
+Each of the `r length(canon_symbol)` genes now has one symbol; `r n_ref` of them were confirmed by the reference files.
+:::
+
+### 6.3 Allele Symbols
+
+The SOP format is `<gene_symbol><allele>`. The part after `<` comes from a small set of real alleles, so each noisy suffix is matched to a valid one with the same letters and digits, and the prefix is replaced by the gene's official symbol.
+
+```{r}
+#| label: s02-consistent-allele-symbol
+## 3d allele_symbol: <gene_symbol><allele>, brackets closed (SOP)
+# The part after '<' comes from a small set of real alleles (tm1b(KOMP)Wtsi ...).
+# Each noisy suffix is matched to a valid one by its letters+digits key
+# ('tm1b((KOMP)Wts)i>' -> key 'tm1bkompwtsi' -> 'tm1b(KOMP)Wtsi>'),
+# and the prefix is replaced by the gene's official symbol.
+old <- data$allele_symbol
+suffix <- ifelse(!is.na(old) & grepl("<", old), sub("^[^<]*<", "", old), NA)
+valid_suffix <- !is.na(suffix) &
+  grepl("^(Gt|[a-z]+)[0-9]*[a-z]?(\\.[0-9]+)?(\\([A-Za-z0-9]+\\))?[A-Z][A-Za-z0-9]*>$", suffix) &
+  !grepl("[A-Z]{3,}>$", suffix)                  # All-caps lab code (WTSI) = case noise
+key <- tolower(gsub("[^A-Za-z0-9]", "", suffix))
+best_suffix <- tapply(suffix[valid_suffix], key[valid_suffix], mode_of)
+fixed_suffix <- ifelse(valid_suffix, suffix, unname(best_suffix[key]))
+unrepaired <- !is.na(suffix) & is.na(fixed_suffix)
+fixed_suffix[unrepaired] <- gsub("[^A-Za-z0-9().<>]", "", suffix[unrepaired])
+data$allele_symbol <- ifelse(is.na(fixed_suffix) | is.na(data$gene_symbol), NA,
+                             paste0(data$gene_symbol, "<", fixed_suffix))
+log_step("3 consistent", "allele_symbol", n_changed(old, data$allele_symbol),
+         sprintf("prefix set to official gene symbol; %d malformed suffixes repaired from valid alleles",
+                 sum(!valid_suffix & !is.na(suffix) & !unrepaired)))
+if (any(unrepaired)) log_step("3 consistent", "allele_symbol", sum(unrepaired),
+                              "suffix could not be matched; illegal characters stripped only")
+```
+
+::: {.callout-note title="Finding"}
+`r sum(!valid_suffix & !is.na(suffix) & !unrepaired)` malformed allele suffixes were repaired from valid alleles, and `r sum(unrepaired)` could not be matched (illegal characters were removed only).
+:::
+
+### 6.4 Strain
+
+`strain_name` must be one of the 9 strains listed in the SOP. Any other value is set to `NA`.
+
+```{r}
+#| label: s02-consistent-strain-name
+## 3e strain_name: must be one of the 9 SOP strains
+bad <- !is.na(data$strain_name) & !(data$strain_name %in% sop_strains)
+if (any(bad)) { data$strain_name[bad] <- NA
+log_step("3 consistent", "strain_name", sum(bad), "not an SOP strain -> NA") }
+log_step("3 consistent", "strain_name", 0, "all values checked against the 9 SOP strains")
+```
+
+::: {.callout-note title="Finding"}
+`r sum(bad)` strain values were not in the SOP list and were set to `NA`.
+:::
+
+### 6.5 Life Stage
+
+Values such as `Ear-ly adult` or `E1-2.5` are compared on their letters and digits only, then mapped to the 7 SOP stages, so they are corrected instead of being lost.
+
+```{r}
+#| label: s02-consistent-mouse-life-stage
+## 3f mouse_life_stage: map noisy text to the 7 SOP stages
+# Compare on letters+digits only, so 'Ear-ly adult', 'EARLY ADULT', 'Ea)rly adult'
+# and 'E1-2.5' all resolve correctly instead of being lost.
+stage_key <- c(e95 = "E9.5", e125 = "E12.5", e155 = "E15.5", e185 = "E18.5",
+               earlyadult = "Early adult", middleagedadult = "Middle aged adult",
+               lateadult = "Late adult")
+old <- data$mouse_life_stage
+k <- tolower(gsub("[^A-Za-z0-9]", "", old))
+new <- unname(stage_key[k])
+log_step("3 consistent", "mouse_life_stage", n_changed(old, new),
+         "case/punctuation/junk characters removed and mapped to the 7 SOP stages")
+lost <- !is.na(old) & is.na(new)
+if (any(lost)) log_step("3 consistent", "mouse_life_stage", sum(lost),
+                        paste("unrecognised -> NA:", paste(head(unique(old[lost]), 5), collapse = "; ")))
+data$mouse_life_stage <- factor(new, levels = sop_stages, ordered = TRUE)
+```
+
+```{r}
+#| label: s02-view-consistent-mouse-life-stage
+# Life stage before cleaning (most common values)
+head(sort(table(raw$mouse_life_stage, useNA = "ifany"), decreasing = TRUE), 15)
+
+# Life stage after cleaning
+table(data$mouse_life_stage, useNA = "ifany")
+```
+
+::: {.callout-note title="Finding"}
+After cleaning, every life stage is one of the 7 SOP values or `NA`. `r sum(lost)` values could not be recognised and were set to `NA`.
+:::
+
+### 6.6 Parameter IDs
+
+Junk characters and extra underscores had been added to parameter IDs (for example, `IM_PC_GEL_028_001`). Each ID is rebuilt from its letters and digits in the SOP pattern.
+
+```{r}
+#| label: s02-consistent-parameter-id
+## 3g parameter_id: PREFIX_PROC_NNN_NNN or PREFIX_NNN_NNN_NNN
+# Junk characters AND extra underscores were injected (IM_PC_GEL_028_001,
+# M-G-P_014_001_009). The ID is rebuilt from its letters and digits.
+rebuild_pid <- function(x) {
+  s   <- gsub("[^A-Z0-9]", "", toupper(x))
+  out <- rep(NA_character_, length(x))
+  a <- !is.na(s) & grepl("^[A-Z]+[A-Z]{3}[0-9]{6}$", s)
+  out[a] <- sub("^([A-Z]+)([A-Z]{3})([0-9]{3})([0-9]{3})$", "\\1_\\2_\\3_\\4", s[a])
+  b <- !is.na(s) & !a & grepl("^[A-Z]+[0-9]{9}$", s)
+  out[b] <- sub("^([A-Z]+)([0-9]{3})([0-9]{3})([0-9]{3})$", "\\1_\\2_\\3_\\4", s[b])
+  out
+}
+old <- data$parameter_id
+data$parameter_id <- rebuild_pid(old)
+log_step("3 consistent", "parameter_id", n_changed(old, data$parameter_id),
+         "upper case, junk characters and extra underscores removed, ID rebuilt")
+lost <- !is.na(old) & is.na(data$parameter_id)
+if (any(lost)) log_step("3 consistent", "parameter_id", sum(lost), "could not be rebuilt -> NA")
+```
+
+::: {.callout-note title="Finding"}
+`r n_changed(old, data$parameter_id)` parameter IDs were rebuilt in the SOP pattern, and `r sum(lost)` could not be rebuilt and were set to `NA`.
+:::
+
+### 6.7 Parameter Names
+
+Only an encoding error is fixed here (`NaÃÂ¯ve` becomes `Naïve`). The names are not re-cased, because they must still match the parameter description file used in Step 3.
+
+```{r}
+#| label: s02-consistent-parameter-name
+## 3h parameter_name: whitespace done; fix a UTF-8 encoding error
+old <- data$parameter_name
+data$parameter_name <- gsub("Ã\u0083Â¯|Ã¯", "ï", data$parameter_name)
+n <- n_changed(old, data$parameter_name)
+if (n) log_step("3 consistent", "parameter_name", n, "encoding error fixed ('NaÃÂ¯ve' -> 'Naïve')")
+# Names are NOT re-cased: they must match IMPC_parameter_description.txt exactly.
+```
+
+### 6.8 Missing Parameter IDs and Names
+
+Each parameter ID has one name. A missing ID is filled from its name only when that name belongs to exactly one ID, and a missing name is filled from its ID. Where there is any doubt, the value stays missing.
+
+```{r}
+#| label: s02-consistent-missing-parameter-ids-an
+## 3i parameter_id <-> parameter_name: each ID has one name. Fill a missing ID only when
+## its name belongs to exactly one ID, and a missing name from its ID.
+pairs <- unique(data[!is.na(data$parameter_id) & !is.na(data$parameter_name),
+                     c("parameter_id", "parameter_name")])
+ids_per_name <- table(pairs$parameter_name)
+unique_names <- names(ids_per_name)[ids_per_name == 1]
+name_to_id   <- setNames(pairs$parameter_id, pairs$parameter_name)[unique_names]
+id_to_name   <- tapply(pairs$parameter_name, pairs$parameter_id, mode_of)
+
+fill <- is.na(data$parameter_id) & data$parameter_name %in% unique_names
+data$parameter_id[fill] <- unname(name_to_id[data$parameter_name[fill]])
+if (any(fill)) log_step("3 consistent", "parameter_id", sum(fill),
+                        "missing ID recovered from a parameter name that maps to exactly one ID")
+fill <- is.na(data$parameter_name) & !is.na(data$parameter_id) & data$parameter_id %in% names(id_to_name)
+data$parameter_name[fill] <- unname(id_to_name[data$parameter_id[fill]])
+if (any(fill)) log_step("3 consistent", "parameter_name", sum(fill), "missing name recovered from parameter ID")
+```
+
+### 6.9 LacZ Expression
+
+Each `lacz_*` value is compared on its letters only (so `no express)ion` matches `no expression`) and mapped to one of the 6 values allowed by the SOP.
+
+```{r}
+#| label: s02-consistent-lacz
+## 3j lacz_*: map to the 6 SOP values
+lacz_key <- c(noexpression = "no expression", expression = "expression",
+              nodata = "No data", tissuenotavailable = "tissue not available",
+              ambiguous = "ambiguous", imageonly = "imageOnly")
+for (col in lacz_cols) {
+  old <- data[[col]]
+  new <- unname(lacz_key[tolower(gsub("[^A-Za-z]", "", old))])
+  log_step("3 consistent", col, n_changed(old, new), "mapped to the 6 SOP LacZ values")
+  lost <- !is.na(old) & is.na(new)
+  if (any(lost)) log_step("3 consistent", col, sum(lost), "unrecognised -> NA")
+  data[[col]] <- new
+}
+```
+
+::: {.callout-note title="Finding"}
+Every `lacz_*` value is now one of the 6 SOP values or `NA`. The malformed values found during exploration, such as `no express)ion` and `no expres%sion`, are corrected to `no expression`.
+:::
+
+## 7. Free from Errors
+
+### 7.1 p-values
+
+p-values that are not numbers or lie outside 0–1 are invalid. There is no reliable way to know the correct value, so they are set to `NA` rather than guessed.
+
+```{r}
+#| label: s02-free-from-errors-p-values
+old <- data$pvalue
+p <- suppressWarnings(as.numeric(old))
+non_num <- !is.na(old) & is.na(p)
+if (any(non_num)) log_step("4 error-free", "pvalue", sum(non_num),
+                           paste("not a number -> NA:", paste(head(unique(old[non_num]), 5), collapse = "; ")))
+out_range <- !is.na(p) & (p < 0 | p > 1)
+if (any(out_range)) {
+  log_step("4 error-free", "pvalue", sum(out_range),
+           paste("outside [0,1] -> NA (invalid, not corrected):", paste(head(p[out_range], 5), collapse = "; ")))
+  p[out_range] <- NA
+}
+data$pvalue <- p
+```
+
+```{r}
+#| label: s02-view-free-from-errors-p-values
+# Cleaned p-values
+summary(data$pvalue)
+```
+
+::: {.callout-warning title="Problem found"}
+`r sum(non_num)` p-values were not numbers and `r sum(out_range)` were outside 0–1. All of them were set to `NA`.
+:::
+
+### 7.2 Text Lengths
+
+The SOP gives a minimum and maximum length for every text field (for example, `gene_symbol` must be 1–13 characters). A value outside these limits is likely to be an error, but the correct value usually cannot be worked out, so these values are **flagged in the log, not changed**.
+
+The check covers the free-text fields only. Fields with a list of allowed values (`strain_name`, `mouse_life_stage` and `lacz_*`) were already checked against that list in section 6, and their SOP length limits contradict the SOP's own allowed values: `tissue not available` has 20 characters (limit 19) and `B6Brd;B6Dnk;B6N-Tyr<c-Brd>` has 26 (limit 25). `analysis_id` is also left out, because its SOP length of 15 is an error (section 6.1).
+
+```{r}
+#| label: s02-free-from-errors-text-lengths
+# SOP length limits for the text fields
+sop <- read.csv("reference_files/IMPC_SOP_2026.csv", stringsAsFactors = FALSE)
+
+# Free-text fields only (fields with an allowed list were checked in section 6)
+text_fields <- c("gene_accession_id", "gene_symbol", "parameter_id",
+                 "parameter_name", "allele_symbol")
+sop_len <- sop[sop$dataField %in% text_fields, c("dataField", "minValue", "maxValue")]
+
+# Count the values in each field that are shorter or longer than the SOP allows
+length_check <- do.call(rbind, lapply(seq_len(nrow(sop_len)), function(i) {
+  col <- sop_len$dataField[i]
+  x   <- as.character(data[[col]])
+  out <- !is.na(x) & (nchar(x) < sop_len$minValue[i] | nchar(x) > sop_len$maxValue[i])
+  if (any(out)) log_step("4 error-free", col, sum(out),
+                         sprintf("length outside SOP limits (%d-%d characters): flagged, not changed",
+                                 as.integer(sop_len$minValue[i]), as.integer(sop_len$maxValue[i])))
+  data.frame(column = col, min_length = sop_len$minValue[i], max_length = sop_len$maxValue[i],
+             outside_limits = sum(out), stringsAsFactors = FALSE)
+}))
+```
+
+```{r}
+#| label: s02-view-free-from-errors-text-lengths
+# Values outside the SOP length limits, per column
+length_check
+```
+
+::: {.callout-note title="Finding"}
+`r sum(length_check$outside_limits)` values are outside the SOP length limits. Any value outside the limits would be recorded in the log for checking but left unchanged; here, every free-text value is within its limits.
+:::
+
+## 8. Unique: Duplicates
+
+Duplicates are removed last, because many duplicate files only match once their noise has been cleaned. Exact copies are removed first; rows that share an analysis ID but differ in content are merged into one row, and any conflicting values are logged.
+
+```{r}
+#| label: s02-unique
+# Duplicates are removed AFTER cleaning: most duplicate files only differed by
+# injected noise, so once cleaned they are identical.
+content_cols <- setdiff(names(data), "source_file")
+exact <- duplicated(data[content_cols])
+if (any(exact)) {
+  data <- data[!exact, ]
+  log_step("5 unique", "all", sum(exact), "exact duplicate rows removed (after cleaning)")
+}
+
+dup_ids <- unique(data$analysis_id[duplicated(data$analysis_id) & !is.na(data$analysis_id)])
+if (length(dup_ids)) {
+  conflicts <- character(0)
+  keep <- rep(TRUE, nrow(data))
+  for (id in dup_ids) {
+    rows  <- which(data$analysis_id == id)
+    first <- rows[1]
+    for (col in content_cols) {
+      vals <- data[[col]][rows]
+      vals <- vals[!is.na(vals)]
+      if (!length(vals)) next
+      if (length(unique(as.character(vals))) > 1) conflicts <- c(conflicts, sprintf("%s:%s", id, col))
+      if (is.na(data[[col]][first])) data[[col]][first] <- vals[1]   # Fill gaps from the copy
+    }
+    keep[rows[-1]] <- FALSE
+  }
+  data <- data[keep, ]
+  log_step("5 unique", "analysis_id", sum(!keep),
+           sprintf("same ID, different content: merged into one row (gaps filled from the copy; %d field conflicts kept first value)",
+                   length(conflicts)))
+  if (length(conflicts)) log_step("5 unique", "analysis_id", length(conflicts),
+                                  paste("conflicts:", paste(head(conflicts, 10), collapse = ", ")))
+}
+```
+
+```{r}
+#| label: s02-view-unique
+# Rows before and after
+c(raw_rows = nrow(raw), clean_rows = nrow(data))
+```
+
+::: {.callout-note title="Finding"}
+`r nrow(raw) - nrow(data)` duplicate rows were removed, leaving `r nrow(data)` analyses, each with a unique `analysis_id`.
+:::
+
+## 9. Save
+
+The cleaned table and the change log are saved. The remaining `NA` counts in the log include values set to `NA` during cleaning, not only values that were missing in the raw files.
+
+```{r}
+#| label: s02-save
+na_left <- colSums(is.na(data[content_cols]))
+for (col in names(na_left)[na_left > 0])
+  log_step("final", col, na_left[[col]], "values still missing (genuinely absent in the source)")
+log_step("final", "all", nrow(data),
+         sprintf("rows written (%d raw rows in, %d removed as duplicates)", nrow(raw), nrow(raw) - nrow(data)))
+
+data$mouse_life_stage <- as.character(data$mouse_life_stage)
+write.csv(data, out_file, row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+write.csv(change_log, log_file, row.names = FALSE, fileEncoding = "UTF-8")
+
+message(sprintf("\nWrote %s (%d rows x %d columns) and %s (%d steps)",
+                out_file, nrow(data), ncol(data), log_file, nrow(change_log)))
+```
+
+```{r}
+#| label: s02-view-save
+# Full change log
+change_log
+```
+
+::: {.callout-note title="Finding"}
+`r sum(trimws(raw$gene_symbol) %in% na_tokens)` gene symbols were missing in the raw data, and `r sum(is.na(data$gene_symbol))` are missing after cleaning: every analysis now has a gene symbol, recovered from its MGI ID (section 6.2). The values that are still missing (for example `r sum(is.na(data$pvalue))` p-values and `r sum(is.na(data$parameter_id))` parameter IDs) could not be worked out from the data or a reference file, so they are kept as `NA`.
+:::
+
+## 10. Reproducibility Record
+
+The MD5 hash acts as a fingerprint of each output file: if the script is run again on the same input and produces the same hashes, the outputs are identical. The R session details are recorded so the same package versions can be used again.
+
+```{r}
+#| label: s02-reproducibility-record
+tools::md5sum(c("cleaned_data.csv", "cleaned_data_log.csv"))
+sessionInfo()
+```
+
+## 11. Summary and Next Step
+
+Every value in the table now follows the SOP or is `NA`, and every analysis appears once. All changes, with the number of rows affected, are recorded in `cleaned_data_log.csv`.
+
+::: {.callout-tip title="Next step"}
+In Step 3 (`03_metadata_cleaning`), the supporting files (procedures, parameters, disease information, homology and the query genes) are cleaned and turned into normalised database tables. `cleaned_data.csv` is used there to link those tables to the analyses.
+:::

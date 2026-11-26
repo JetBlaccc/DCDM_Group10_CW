@@ -1,0 +1,412 @@
+---
+title: "Step 0 – Data Exploration"
+author: "DCDM Group 10"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: false
+    code-fold: show
+    embed-resources: true
+execute:
+  dir: project
+editor: visual
+---
+
+```{r}
+#| label: setup
+#| include: false
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Introduction
+
+The aim of this step is to understand how the 28,495 raw IMPC CSV files are structured before merging or cleaning them. We first count the files and look at one of them to see how fields and values are stored. One file cannot show whether the whole dataset is consistent, so we then check that all files have the same dimensions and compare their field names against the IMPC Standard Operating Procedure (SOP).
+
+This step focuses on the **structure** of the files, because that determines how they can be merged. Problems with the **values** are noted as early findings, but they are investigated fully in Step 2 (Cleaning, `02_data_cleaning`), once all the data is in one table.
+
+## 2. The Raw Files
+
+### 2.1 Number of Files
+
+We started by listing every CSV file in the raw data folder.
+
+```{r}
+#| label: s01-list-files
+# List all CSV files in the raw data folder
+csv_files <- list.files(
+  path = "group10_data",
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+# Count them
+length(csv_files)
+```
+
+::: {.callout-note title="Finding"}
+There are `r length(csv_files)` CSV files in `group10_data`, one per analysis.
+:::
+
+### 2.2 What One File Looks Like
+
+Before checking all the files, we opened the first one to see how the data is stored.
+
+```{r}
+#| label: s01-first-file
+# Open the first file as it is, without treating any line as a header
+read.csv(csv_files[1], header = FALSE, colClasses = "character")
+```
+
+::: {.callout-note title="Finding"}
+The file has 20 rows and 2 columns. It stores one analysis "sideways": the 20 field names are in the first column and their values in the second. To merge the files, each one will need to become a single row, with the field names as column names.
+:::
+
+::: {.callout-warning title="Problem found"}
+Even this one file contains typing errors: `lacz_brain` is written as `no express)ion` and `lacz_skin` as `no^ expression`, both typos of `no expression`. Other files may contain similar errors, so the whole dataset needs to be checked rather than relying on one file.
+:::
+
+### 2.3 File Dimensions
+
+One file cannot show whether the whole dataset is consistent. Files with extra or missing lines would not merge cleanly, so we checked whether every file has the same 20 rows and 2 columns. The files are read once and kept in a list (`raw_list`), so they do not need to be read again later. Everything is read as text, so R does not convert any values automatically; type conversion is left for the cleaning step, where it can be done deliberately.
+
+```{r}
+#| label: s01-dimensions
+# Read every file once, keeping every value as text
+raw_list <- lapply(csv_files, read.csv, header = FALSE, colClasses = "character")
+
+# Get the number of rows and columns of every file
+dimensions <- sapply(raw_list, dim)
+
+# Count files by number of rows
+table(dimensions[1, ])
+
+# Count files by number of columns
+table(dimensions[2, ])
+```
+
+::: {.callout-note title="Finding"}
+All files have 20 rows and 2 columns, so the file dimensions are consistent. However, the same shape does not mean every file uses the same field names, so the names still need checking.
+:::
+
+## 3. Expected Fields from the SOP
+
+### 3.1 SOP Fields
+
+To know which field names are correct, we looked at the IMPC SOP, which lists the fields each analysis should contain and the rules their values must follow.
+
+```{r}
+#| label: s01-sop
+impc_sop <- read.csv("reference_files/IMPC_SOP_2026.csv", stringsAsFactors = FALSE)
+impc_sop
+
+sop_fields <- impc_sop$dataField
+```
+
+### 3.2 Comparison with the Raw Files
+
+We compared the SOP with the field names in the first raw file.
+
+```{r}
+#| label: s01-sop-vs-first-file
+first_file_names <- raw_list[[1]][[1]]
+
+# In the raw file, but not in the SOP
+setdiff(first_file_names, sop_fields)
+
+# In the SOP, but not in the raw file
+setdiff(sop_fields, first_file_names)
+```
+
+::: {.callout-warning title="Problem found"}
+Two field names differ from the SOP: the raw files use `parameter_stable_id` and `p_value`, while the SOP uses `parameter_id` and `pvalue`. These will need renaming during the merge.
+:::
+
+::: {.callout-note title="Finding"}
+The SOP lists the tissue fields as a single entry, `lacz_*`, while the raw files have one field per tissue (`lacz_blood`, `lacz_brain`, and so on). `strain_name` is used in both the raw files and the SOP, so it does not need renaming.
+:::
+
+### 3.3 Reference List of Expected Fields
+
+To use the SOP as a reference for the raw files, we adjusted its names to the raw naming and expanded `lacz_*` into the individual tissue fields. In the final dataset it is the other way round: the raw names are renamed **to** the SOP names, in `01_merge`.
+
+```{r}
+#| label: s01-expected-fields
+# Start from the SOP field names
+expected_columns <- sop_fields
+
+# Use the raw names for the two fields that differ
+expected_columns[expected_columns == "parameter_id"] <- "parameter_stable_id"
+expected_columns[expected_columns == "pvalue"]       <- "p_value"
+
+# Replace "lacz_*" with the individual tissue fields
+expected_columns <- c(
+  expected_columns[expected_columns != "lacz_*"],
+  grep("^lacz_", first_file_names, value = TRUE)
+)
+
+# Check that the first file contains exactly these fields
+setequal(expected_columns, first_file_names)
+```
+
+::: {.callout-note title="Finding"}
+The first file contains exactly the fields the SOP expects, so `expected_columns` can be used as the reference list for all files.
+
+Two other points from the SOP will be useful later:
+
+-   the allowed `lacz_*` values include `No data` (with a capital N);
+-   the SOP contradicts itself about `analysis_id`: the remarks describe a 12-character string, but the minimum and maximum lengths are both 15. This will be checked against the real data in Step 2.
+:::
+
+## 4. Field Names Across All Files
+
+### 4.1 Duplicate Field Names
+
+If a file contained the same field name twice, its values could not be matched to columns reliably. Before comparing or combining the files, we checked every file for duplicate field names.
+
+```{r}
+#| label: s01-duplicate-fields
+# Does any file use the same field name twice?
+duplicate_fields <- sapply(raw_list, function(x) anyDuplicated(x[[1]]) > 0)
+sum(duplicate_fields)
+```
+
+::: {.callout-note title="Finding"}
+`r sum(duplicate_fields)` files contain a duplicated field name, so every file can safely be turned into one row.
+:::
+
+### 4.2 Unexpected Field Names
+
+Next, we compared the field names in every file with the reference list from section 3.3. The names are checked in each file directly, so a misnamed field is found even if its value is missing.
+
+```{r}
+#| label: s01-unexpected
+# Field names in each file that are not in the reference list
+unexpected_fields <- lapply(raw_list, function(x) setdiff(x[[1]], expected_columns))
+names(unexpected_fields) <- basename(csv_files)
+
+# Show only the files that have any
+unexpected_fields[lengths(unexpected_fields) > 0]
+
+# The affected files, and all the unexpected names found
+affected_files     <- names(unexpected_fields)[lengths(unexpected_fields) > 0]
+unexpected_columns <- unique(unlist(unexpected_fields))
+```
+
+::: {.callout-warning title="Problem found"}
+`r length(unexpected_columns)` unexpected field names were found in `r length(affected_files)` files, so some files contain more than one problem. Each file is inspected individually in section 5.
+:::
+
+### 4.3 Missing Expected Fields
+
+An unexpected name usually means an expected name is missing from the same file. To confirm this, we listed which expected fields are absent from each file.
+
+```{r}
+#| label: s01-missing-fields
+# Expected fields that each file does not contain
+missing_fields <- lapply(raw_list, function(x) setdiff(expected_columns, x[[1]]))
+names(missing_fields) <- basename(csv_files)
+
+missing_fields[lengths(missing_fields) > 0]
+```
+
+::: {.callout-note title="Finding"}
+`r sum(lengths(missing_fields) > 0)` files are missing at least one expected field, and they are the same files that contain the unexpected names. All other files contain every expected field, including the same 11 `lacz_*` tissue fields, so the tissue names are consistent across the whole dataset.
+:::
+
+### 4.4 Quick Merge
+
+To see how these problems would affect a combined table, we did a quick merge: each file is turned into one row, and the rows are combined by matching field names, not row positions. The file name is kept in a `source_file` column so each row can be traced back. This merge is for exploration only; the final merge, which also repairs the problems found here, is done in `01_merge`.
+
+We first tested the reshaping on one file.
+
+```{r}
+#| label: s01-reshape-one
+one_file_data <- raw_list[[1]]
+
+variable_names  <- one_file_data[[1]]   # Field names (column V1)
+variable_values <- one_file_data[[2]]   # Values (column V2)
+
+# Turn the file into one row
+one_file_reshaped <- as.data.frame(
+  as.list(setNames(variable_values, variable_names)),
+  check.names = FALSE
+)
+dim(one_file_reshaped)
+```
+
+The file becomes one row with 20 columns, as expected, so we applied the same steps to every file.
+
+```{r}
+#| label: s01-quick-merge
+# Turn one file into one row
+reshape_one_file <- function(csv_data, csv_path) {
+  variable_names  <- csv_data[[1]]
+  variable_values <- csv_data[[2]]
+
+  # Stop if a file contains the same field name twice
+  stopifnot(!anyDuplicated(variable_names))
+
+  reshaped_data <- as.data.frame(
+    as.list(setNames(variable_values, variable_names)),
+    check.names = FALSE
+  )
+  reshaped_data$source_file <- basename(csv_path)
+  reshaped_data
+}
+
+# Apply it to every file
+all_reshaped_files <- Map(reshape_one_file, raw_list, csv_files)
+
+# Combine all rows, matching columns by field name
+# (any field a file does not have is filled with NA)
+all_names <- unique(unlist(lapply(all_reshaped_files, names)))
+
+impc_raw_data <- do.call(rbind, lapply(all_reshaped_files, function(d) {
+  d[setdiff(all_names, names(d))] <- NA
+  d[all_names]
+}))
+rownames(impc_raw_data) <- NULL
+dim(impc_raw_data)
+head(impc_raw_data)
+```
+
+::: {.callout-warning title="Problem found"}
+The merged table has `r ncol(impc_raw_data)` columns instead of 21: each unexpected field name became an extra column, almost entirely empty. This shows why the names must be fixed before the real merge.
+:::
+
+## 5. Investigation of Affected Files
+
+```{r}
+#| label: s01-affected-data
+# Look up each affected file in raw_list by its name
+affected_file_data <- raw_list[match(affected_files, basename(csv_files))]
+names(affected_file_data) <- affected_files
+```
+
+### 5.1 an1002617512.csv
+
+The unexpected field name in this file looked like a field and a value joined together, so we looked at the original line in the raw file.
+
+```{r}
+#| label: s01-file-an1002617512
+readLines("group10_data/an1002617512.csv", warn = FALSE)[14]
+```
+
+::: {.callout-warning title="Problem found"}
+The comma between `lacz_kidney` and its value `expression` is missing, so the field name and the value were read as a single field. This is a structural formatting error that must be repaired during the merge.
+:::
+
+### 5.2 an3265725976.csv
+
+```{r}
+#| label: s01-file-an3265725976
+affected_file_data[["an3265725976.csv"]]
+```
+
+::: {.callout-warning title="Problem found"}
+The field `parameter_name` is written as `parameterName`. Several values are also malformed, including `n(o expression`, `no expressio.n` and `no expressio)n`.
+:::
+
+### 5.3 an3797698600.csv
+
+To investigate the unexpected field name in this file, we looked at line 15 of the original file.
+
+```{r}
+#| label: s01-file-an3797698600
+affected_file_data[["an3797698600.csv"]]
+readLines("group10_data/an3797698600.csv", warn = FALSE)[15]
+```
+
+::: {.callout-warning title="Problem found"}
+Line 15 contains only the value `"no expression"`, with no field name and no comma. `lacz_liver` is the only expected field missing from this file (section 4.3), so the value most likely belongs to `lacz_liver`. However, this cannot be confirmed from the file itself, so the merge does not assign it to a column; it is skipped and recorded in the log instead. The same file also contains the malformed value `no expres%sion` in `lacz_vascular_system`.
+:::
+
+### 5.4 an7422024571.csv
+
+```{r}
+#| label: s01-file-an7422024571
+affected_file_data[["an7422024571.csv"]]
+```
+
+::: {.callout-warning title="Problem found"}
+Two field names are written incorrectly: `laczEye` (should be `lacz_eye`) and `laczJeart` (a typo of `lacz_heart`). There are also malformed values in `gene_symbol` (`Fan(1`) and `mouse_life_stage` (`Early adul+t`).
+:::
+
+### 5.5 an9995988284.csv
+
+```{r}
+#| label: s01-file-an9995988284
+affected_file_data[["an9995988284.csv"]]
+```
+
+::: {.callout-warning title="Problem found"}
+Two field names use the wrong format: `Mouse_life_stage` and `analysisId` (should be `mouse_life_stage` and `analysis_id`).
+:::
+
+::: {.callout-note title="Finding"}
+The value `No data` appears in `lacz_blood` and `lacz_colon`. The SOP lists `No data` as an allowed value (section 3.3), so this is not an error.
+:::
+
+## 6. Early Findings on Missing Values
+
+Although values are investigated fully in Step 2, we made a first check of how many values are missing in each field.
+
+```{r}
+#| label: s01-missing
+# Missing values per field, most first
+missing_counts <- colSums(is.na(impc_raw_data[expected_columns]))
+sort(missing_counts, decreasing = TRUE)
+
+# Records with at least one missing value
+rows_with_missing <- sum(rowSums(is.na(impc_raw_data[expected_columns])) > 0)
+rows_with_missing
+```
+
+::: {.callout-warning title="Problem found"}
+`r rows_with_missing` of the `r nrow(impc_raw_data)` records (`r round(100 * rows_with_missing / nrow(impc_raw_data), 1)`%) have at least one missing value. The most affected fields are `r paste(names(sort(missing_counts, decreasing = TRUE))[1:3], collapse = ", ")`. Missing values are spread across many fields, so they are not only caused by the five files with naming problems.
+:::
+
+::: {.callout-note title="Finding"}
+Some of these values are not genuinely missing. In the five affected files, a misnamed field leaves its correctly named column empty in the quick merge: for example, `analysis_id` is empty for `an9995988284.csv` because that file calls the field `analysisId`. These values are recovered when the names are fixed in `01_merge`, so the true number of missing values will only be known after merging.
+:::
+
+We also checked whether missing values might be stored as empty text instead of `NA`.
+
+```{r}
+#| label: s01-empty-strings
+# Empty strings per field
+colSums(impc_raw_data[expected_columns] == "", na.rm = TRUE)
+```
+
+::: {.callout-note title="Finding"}
+No empty strings were found in the imported data, and missing values are currently represented as `NA`. However, `read.csv()` turns the text `NA` into a missing value when it reads a file, so this does not show how missing values were originally written in the raw files. Other possible missing-value codes (such as `"N/A"` or `"null"`) are checked in Step 2.
+:::
+
+## 7. Summary and Next Step
+
+All `r length(csv_files)` files have the same shape, but they are not consistent in structure. We found:
+
+| Problem | Where | Fixed in |
+|----|----|----|
+| Field names that differ from the SOP: `parameter_stable_id`, `p_value` | Every file | `01_merge` |
+| Field names in the wrong format: `parameterName`, `laczEye`, `analysisId`, `Mouse_life_stage` | 3 files | `01_merge` |
+| Typo in a field name: `laczJeart` | `an7422024571.csv` | `01_merge` |
+| Missing comma between field name and value | `an1002617512.csv` | `01_merge` |
+| Value with no field name | `an3797698600.csv` | `01_merge` |
+| Malformed values, e.g. `no express)ion`, `Early adul+t`, `Fan(1` | Several files | Step 2 |
+| Missing values | `r rows_with_missing` records | Step 2 |
+| `analysis_id` length unclear in the SOP (12 or 15) | SOP | Step 2 |
+
+::: {.callout-tip title="Next step"}
+The structural problems must be fixed before the files can be merged reliably, so the merge (`01_merge`) must:
+
+1.  rename `parameter_stable_id` and `p_value` to their SOP names;
+2.  convert field names written in the wrong format to the SOP format;
+3.  fix the typo `laczJeart` → `lacz_heart`;
+4.  repair the missing comma in `an1002617512.csv`;
+5.  handle the line with no field name in `an3797698600.csv`.
+
+The value problems do not affect the merge and are investigated in Step 2 (Cleaning, `02_data_cleaning`), once all the data is in one table.
+:::

@@ -1,0 +1,649 @@
+---
+title: "Step 3 – Cleaning the Supporting Files"
+author: "DCDM Group 10"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: false
+    code-fold: show
+    embed-resources: true
+execute:
+  dir: project
+editor: visual
+---
+
+## 1. Introduction
+
+Step 2 (`02_data_cleaning`) produced a clean table of analyses. To answer the collaborator's questions, the database also needs information from five supporting files: the procedure and parameter descriptions, the disease information, the homology export and the list of query genes.
+
+This step cleans those files and turns them into **normalised** tables, where each fact is stored once and tables are linked by standard IDs (MGI for mouse genes, DOID for diseases, HGNC for human genes and Ensembl for homologs). It also builds the parameter groups requested by the collaborator. Every change is written to a log.
+
+| Input | Output |
+|----|----|
+| `cleaned_data.csv` + the five supporting files | one CSV per table in `db_tables/`, `metadata_cleaning_log.csv` |
+
+## 2. Setup
+
+We listed the tables this step creates, found the input files (some had been downloaded twice, so they have names like `Disease_information (1).txt`), checked that they exist, and defined helper functions: `tidy()` to trim spaces and mark blanks as `NA`, a log function, and a primary-key check.
+
+```{r}
+#| label: s03-setup
+# Tables written to db_tables/:
+#   procedure.csv               procedure_id, procedure_name, description, is_mandatory
+#   parameter.csv               parameter_id, parameter_name, procedure_id,
+#                               procedure_source, in_impc_catalogue
+#   parameter_variant.csv       impc_parameter_orig_id, parameter_id, name, description
+#   parameter_group.csv         group_id, group_name, rule
+#   parameter_group_map.csv     parameter_id, group_id
+#   gene.csv                    mgi_id, gene_symbol, in_impc_data
+#   disease.csv                 doid, disease_name
+#   human_gene.csv              hgnc_id, human_symbol, human_name, mgi_id
+#   gene_disease.csv            gene_disease_id, mgi_id, doid
+#   disease_model_genotype.csv  gene_disease_id, genotype_id
+#   species.csv                 species_id, common_name, scientific_name, ensembl_prefix
+#   ensembl_gene.csv            ensembl_gene_id, species_id, gene_name, mgi_id
+#   homology.csv                mouse_ensembl_id, homolog_ensembl_id, homology_type,
+#                               percent_identity, last_common_ancestor
+#   query_gene.csv              gene_symbol, mgi_id, n_analyses
+
+# Input files and output folder
+f_clean     <- "cleaned_data.csv"
+f_parameter <- "reference_files/IMPC_parameter_description.txt"
+f_procedure <- "reference_files/IMPC_procedure.txt"
+f_disease   <- NULL   # Found automatically below
+
+f_homology  <- "reference_files/bespokeTask_hml.txt"
+f_query     <- NULL   # Found automatically below
+out_dir     <- "db_tables"
+
+# Files that were downloaded twice get names like "Disease_information (1).txt"
+find_file <- function(pattern) {
+  hits <- list.files("reference_files", pattern = pattern, full.names = TRUE)
+  if (!length(hits)) stop("No file matching ", pattern, " in reference_files/")
+  if (length(hits) > 1) message("Several files match ", pattern, " - using ", hits[length(hits)])
+  hits[length(hits)]
+}
+if (is.null(f_disease)) f_disease <- find_file("^Disease_information.*\\.txt$")
+if (is.null(f_query))   f_query   <- find_file("^group10_query_genes.*\\.csv$")
+
+# Stop if any input file is missing, then create the output folder
+for (f in c(f_clean, f_parameter, f_procedure, f_disease, f_homology, f_query))
+  if (!file.exists(f)) stop("File not found: ", f, " - check the name at the top of this script")
+dir.create(out_dir, showWarnings = FALSE)
+
+# Log of every change made in this step
+change_log <- data.frame(file = character(), step = character(), rows = integer(),
+                         detail = character(), stringsAsFactors = FALSE)
+log_step <- function(file, step, n, detail) {
+  change_log[nrow(change_log) + 1, ] <<- list(file, step, as.integer(n), detail)
+  message(sprintf("[%-10s] %-14s %7d  %s", file, step, as.integer(n), detail))
+}
+
+# Trim every column and turn blank strings into NA
+tidy <- function(df, file) {
+  for (col in names(df)) {
+    x <- trimws(df[[col]])
+    n_ws <- sum(!is.na(x) & x != df[[col]], na.rm = TRUE)
+    blank <- !is.na(x) & x %in% c("", "NA")
+    x[blank] <- NA
+    if (n_ws)       log_step(file, "whitespace", n_ws, paste0(col, ": leading/trailing spaces removed"))
+    if (any(blank)) log_step(file, "missing", sum(blank), paste0(col, ": blank -> NA"))
+    df[[col]] <- x
+  }
+  df
+}
+
+# Most frequent value (used when a parameter or name has several versions)
+mode_of <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) return(NA_character_)
+  tab <- table(x)
+  names(tab)[which.max(tab)]
+}
+
+# Save a table to db_tables/ and log how many rows were written
+write_table <- function(df, name) {
+  path <- file.path(out_dir, paste0(name, ".csv"))
+  write.csv(df, path, row.names = FALSE, na = "NA", fileEncoding = "UTF-8")
+  log_step(name, "written", nrow(df), path)
+}
+
+# Stop if a table's primary key is not unique
+check_pk <- function(df, cols, name) {
+  d <- sum(duplicated(df[cols]))
+  if (d) stop(sprintf("Primary key violated in %s (%s): %d duplicates", name, paste(cols, collapse = ","), d))
+}
+
+# The cleaned analysis data from Step 2
+clean <- read.csv(f_clean, colClasses = "character", na.strings = "NA", check.names = FALSE)
+```
+
+::: {.callout-note title="Finding"}
+All six input files were found. `r nrow(clean)` cleaned analyses were read from Step 2.
+:::
+
+## 3. Procedures and Parameters
+
+### 3.1 Parameter and Procedure Files
+
+Both files were read and tidied. The parameter file contains some rows that appear twice, so exact duplicates are removed before anything else. We also checked that every parameter ID follows the SOP format.
+
+```{r}
+#| label: s03-parameter-file
+# Read the parameter and procedure files (all values as text)
+par  <- read.csv(f_parameter, colClasses = "character", strip.white = TRUE, na.strings = character(0))
+proc <- read.csv(f_procedure, colClasses = "character", strip.white = TRUE, na.strings = character(0))
+# Trim spaces and turn blanks into NA
+par  <- tidy(par,  "parameter")
+proc <- tidy(proc, "procedure")
+
+# Exact duplicate rows in the parameter file
+d <- duplicated(par)
+if (any(d)) { par <- par[!d, ]; log_step("parameter", "duplicates", sum(d), "exact duplicate rows removed") }
+# Each impcParameterOrigId must now appear only once
+if (anyDuplicated(par$impcParameterOrigId)) stop("impcParameterOrigId is not unique after de-duplication")
+if (anyDuplicated(proc$impcParameterOrigId)) stop("impcParameterOrigId is not unique in the procedure file")
+# Parameter IDs that do not follow the SOP pattern
+bad_id <- !grepl("^[A-Z]+_[A-Z0-9]+_[0-9]{3}_[0-9]{3}$", par$parameterId)
+if (any(bad_id)) log_step("parameter", "check", sum(bad_id), "parameterId not in SOP format")
+
+# Procedure rows that point to a parameter that does not exist
+orphans <- setdiff(proc$impcParameterOrigId, par$impcParameterOrigId)
+if (length(orphans)) log_step("procedure", "check", length(orphans), "OrigIds with no parameter row")
+```
+
+::: {.callout-warning title="Problem found"}
+`r sum(d)` exact duplicate rows were found in the parameter file and removed, leaving `r nrow(par)` rows. `r sum(bad_id)` parameter IDs are not in the SOP format.
+:::
+
+### 3.2 Procedure Table
+
+In the procedure file, the same procedures are repeated once for every parameter, so they are reduced to one row per procedure. Placeholder descriptions written in snake_case (such as `experimental_design`) are not real descriptions, so they become `NA`. Where a procedure has several descriptions, the longest real one is kept.
+
+```{r}
+#| label: s03-procedure
+## 1a procedure table: the 51 procedures were repeated once per parameter (5,311 rows)
+# isMandatory is TRUE/FALSE text -> logical. Where one procedure had several
+# descriptions, the longest real one is kept; snake_case placeholders
+# ('experimental_design') are not real descriptions.
+proc$isMandatory <- toupper(proc$isMandatory)
+if (any(!proc$isMandatory %in% c("TRUE", "FALSE")))
+  stop("isMandatory has values other than TRUE/FALSE")
+placeholder <- !is.na(proc$description) & grepl("^[a-z0-9_]+$", proc$description)
+if (any(placeholder)) log_step("procedure", "placeholder", sum(placeholder),
+                               "snake_case placeholder descriptions -> NA")
+proc$description[placeholder] <- NA
+
+# One row per procedure name; pick the longest description
+proc_names <- sort(unique(proc$name))
+pick_desc  <- function(x) { x <- unique(x[!is.na(x)]); if (!length(x)) NA_character_ else x[which.max(nchar(x))] }
+n_desc     <- tapply(proc$description, proc$name, function(x) length(unique(x[!is.na(x)])))
+if (any(n_desc > 1)) log_step("procedure", "conflict", sum(n_desc > 1),
+                              paste("procedures with >1 description, longest kept:",
+                                    paste(names(n_desc)[n_desc > 1], collapse = "; ")))
+# A procedure must be either mandatory or optional, not both
+mand <- tapply(proc$isMandatory, proc$name, function(x) length(unique(x)))
+if (any(mand > 1)) stop("A procedure is both mandatory and optional")
+
+# Build the procedure table
+procedure <- data.frame(
+  procedure_id   = seq_along(proc_names),
+  procedure_name = proc_names,
+  description    = unname(tapply(proc$description, proc$name, pick_desc)[proc_names]),
+  is_mandatory   = unname(tapply(proc$isMandatory, proc$name, `[`, 1)[proc_names]) == "TRUE",
+  stringsAsFactors = FALSE)
+log_step("procedure", "normalised", nrow(proc),
+         sprintf("%d rows reduced to %d unique procedures", nrow(proc), nrow(procedure)))
+```
+
+```{r}
+#| label: s03-view-procedure
+# Rows before and after
+c(rows_in_file = nrow(proc), unique_procedures = nrow(procedure))
+```
+
+::: {.callout-note title="Finding"}
+`r nrow(proc)` rows were reduced to `r nrow(procedure)` unique procedures. `r sum(placeholder)` placeholder descriptions were set to `NA`, and `r sum(n_desc > 1)` procedure(s) had more than one description (the longest was kept).
+:::
+
+### 3.3 Parameter Variants
+
+The parameter file can describe the same parameter in several versions. Every row is kept in `parameter_variant`, so no version is lost.
+
+```{r}
+#| label: s03-parameter-variant
+## 1b parameter_variant: every row of the parameter file is kept (all data stored)
+pv <- merge(par, proc[c("impcParameterOrigId", "name")], by = "impcParameterOrigId",
+            all.x = TRUE, suffixes = c("", "_procedure"))
+parameter_variant <- data.frame(
+  impc_parameter_orig_id = as.integer(pv$impcParameterOrigId),
+  parameter_id           = pv$parameterId,
+  name                   = pv$name,
+  description            = pv$description,
+  stringsAsFactors = FALSE)
+parameter_variant <- parameter_variant[order(parameter_variant$impc_parameter_orig_id), ]
+```
+
+::: {.callout-note title="Finding"}
+All `r nrow(parameter_variant)` rows of the parameter file are kept in `parameter_variant`, so every version of every parameter is stored, not only the most common one.
+:::
+
+### 3.4 Parameter Table
+
+The `parameter` table has one row per `parameter_id`, the key used by the analysis data. It includes the parameters in the IMPC catalogue and those only found in the analysis data (IDs from other centres, such as `JAX_OFD_009_001`). For those extra IDs, the procedure is inferred from the 3-letter code only when that code belongs to exactly one procedure; `procedure_source` records how each procedure was assigned.
+
+```{r}
+#| label: s03-parameter
+## 1c parameter: ONE row per parameter_id - the key used by the analysis data
+# Catalogue parameters (in the parameter file) get their procedure from the file.
+# Parameters only seen in the analysis data (other centres' IDs, e.g. JAX_OFD_009_001)
+# get a procedure only when their 3-letter code belongs to exactly one IMPC procedure.
+cat_proc <- tapply(pv$name_procedure, pv$parameterId, mode_of)
+cat_name <- tapply(pv$name, pv$parameterId, mode_of)
+n_names  <- tapply(pv$name, pv$parameterId, function(x) length(unique(x)))
+if (any(n_names > 1)) log_step("parameter", "conflict", sum(n_names > 1),
+                               "parameter_ids with >1 name across versions; most common kept (all kept in parameter_variant)")
+
+# Parameter IDs and names as they appear in the analysis data
+data_par  <- unique(clean[!is.na(clean$parameter_id), c("parameter_id", "parameter_name")])
+data_name <- tapply(data_par$parameter_name, data_par$parameter_id, mode_of)
+
+# Every parameter ID from the catalogue or the analysis data
+all_ids <- sort(union(names(cat_name), names(data_name)))
+parameter <- data.frame(parameter_id = all_ids, stringsAsFactors = FALSE)
+# Name: as measured in the analysis data when present, otherwise the catalogue name
+parameter$parameter_name    <- ifelse(all_ids %in% names(data_name),
+                                      unname(data_name[all_ids]), unname(cat_name[all_ids]))
+parameter$in_impc_catalogue <- all_ids %in% names(cat_name)
+
+# Map each 3-letter procedure code to its procedure, where the code is unambiguous
+code       <- sapply(strsplit(names(cat_proc), "_"), `[`, 2)
+code_procs <- tapply(cat_proc, code, function(x) unique(x[!is.na(x)]))
+code_map   <- unlist(code_procs[sapply(code_procs, length) == 1])
+my_code    <- sapply(strsplit(all_ids, "_"), `[`, 2)
+
+# Assign each parameter's procedure and record where it came from
+proc_name <- ifelse(parameter$in_impc_catalogue, unname(cat_proc[all_ids]), NA)
+parameter$procedure_source <- ifelse(!is.na(proc_name), "catalogue", NA)
+infer <- is.na(proc_name) & my_code %in% names(code_map)
+proc_name[infer] <- unname(code_map[my_code[infer]])
+parameter$procedure_source[infer] <- "inferred_from_id_code"
+parameter$procedure_id <- procedure$procedure_id[match(proc_name, procedure$procedure_name)]
+# Keep the columns in table order
+parameter <- parameter[c("parameter_id", "parameter_name", "procedure_id",
+                         "procedure_source", "in_impc_catalogue")]
+
+log_step("parameter", "normalised", nrow(parameter),
+         sprintf("%d catalogue + %d analysis-only parameters; procedure from catalogue %d, inferred %d, unknown %d",
+                 sum(parameter$in_impc_catalogue), sum(!parameter$in_impc_catalogue),
+                 sum(parameter$procedure_source == "catalogue", na.rm = TRUE), sum(infer),
+                 sum(is.na(parameter$procedure_id))))
+# Check that every parameter ID in the analysis data is in the table
+missing_par <- setdiff(unique(clean$parameter_id[!is.na(clean$parameter_id)]), parameter$parameter_id)
+if (length(missing_par)) stop("Analysis parameter_ids missing from parameter table")
+```
+
+::: {.callout-note title="Finding"}
+The table has `r nrow(parameter)` parameters: `r sum(parameter$in_impc_catalogue)` from the IMPC catalogue and `r sum(!parameter$in_impc_catalogue)` only found in the analysis data. The procedure was taken from the catalogue for `r sum(parameter$procedure_source == "catalogue", na.rm = TRUE)`, inferred from the ID code for `r sum(infer)`, and is unknown for `r sum(is.na(parameter$procedure_id))`. Every parameter ID in the analysis data is present in this table.
+:::
+
+## 4. Parameter Groups
+
+The collaborator asked for parameters to be grouped, including at least weight, images and brain, plus three more. We created 12 groups: weight, images, brain, blood, eye, cardiovascular, skeleton, behaviour, hearing, metabolism, immune and embryo. A parameter belongs to a group if its name matches the group's pattern or its procedure is one of the group's procedures. The rule is stored with each group, so membership can be reproduced. A parameter can be in several groups (brain weight is in both weight and brain), so membership is stored in a link table.
+
+```{r}
+#| label: s03-parameter-groups
+## 1d parameter groups (brief: weight, images, brain + at least 3 more)
+# A parameter can belong to several groups (Brain weight -> weight AND brain),
+# so groups are a many-to-many link table. Membership = name pattern OR procedure.
+groups <- list(
+  list("weight",          "name contains 'weight'", "weight", character(0)),
+  list("images",          "name contains 'image'/'imaging'", "imag", character(0)),
+  list("brain",           "name contains 'brain' (fore/mid/hind-brain, brainstem)", "brain", character(0)),
+  list("blood",           "haematology / clinical chemistry / insulin procedures, or blood terms",
+       "blood|plasma|serum|haemoglobin|hemoglobin|platelet|erythrocyte|leukocyte",
+       c("Hematology", "Clinical Chemistry", "Insulin Blood Level")),
+  list("eye",             "Eye Morphology procedure or eye structures",
+       "\\beye|retina|lens\\b|cornea|iris|pupil|ophthalmo|vitreous|conjunctiva",
+       c("Eye Morphology")),
+  list("cardiovascular",  "ECG, echocardiography, heart weight procedures or heart terms",
+       "heart|cardiac|cardio|ventric|atri(um|al)|aort|ecg|\\bqrs|\\bhr\\b",
+       c("Electrocardiogram (ECG)", "Echo", "Heart Weight")),
+  list("skeleton",        "X-ray / DEXA procedures or bone terms",
+       "bone|skull|vertebra|\\bribs?\\b|tibia|femur|digit|\\blimb|\\bbmd\\b|\\bbmc\\b",
+       c("X-ray", "Body Composition (DEXA lean/fat)")),
+  list("behaviour",       "behavioural / neurological test procedures",
+       "startle|pre-pulse|locomot|freezing|anxiety|grip strength",
+       c("Open Field", "Light-Dark Test", "Y-maze", "Fear Conditioning",
+         "Acoustic Startle and Pre-pulse Inhibition (PPI)", "Grip Strength")),
+  list("hearing",         "Auditory Brain Stem Response procedure or ABR terms",
+       "\\babr\\b|auditory|hearing", c("Auditory Brain Stem Response")),
+  list("metabolism",      "glucose tolerance, calorimetry, body composition or metabolic terms",
+       "glucose|insulin|calori|energy expenditure|respiratory exchange|oxygen consumption|fat mass|lean mass",
+       c("Intraperitoneal glucose tolerance test (IPGTT)", "Indirect Calorimetry")),
+  list("immune",          "Immunophenotyping procedure or immune cell terms",
+       "\\bcd[0-9]|t cell|b cell|nk cell|monocyte|neutrophil|lymphocyte|macrophage|dendritic",
+       c("Immunophenotyping")),
+  list("embryo",          "embryo / placenta / viability procedures (E9.5-E18.5)",
+       "embryo|placenta",
+       grep("Embryo|Placenta|Viability E|MicroCT|OPT E9.5", procedure$procedure_name, value = TRUE))
+)
+# Group table: one row per group, with its rule
+parameter_group <- data.frame(group_id = seq_along(groups),
+                              group_name = sapply(groups, `[[`, 1),
+                              rule = sapply(groups, `[[`, 2), stringsAsFactors = FALSE)
+# Each parameter's procedure name
+p_proc <- procedure$procedure_name[match(parameter$procedure_id, procedure$procedure_id)]
+# Link table: which parameters belong to which group
+map_rows <- lapply(seq_along(groups), function(i) {
+  g   <- groups[[i]]
+  hit <- grepl(g[[3]], parameter$parameter_name, ignore.case = TRUE, perl = TRUE) |
+    (!is.na(p_proc) & p_proc %in% g[[4]])
+  if (!sum(hit)) return(NULL)
+  data.frame(parameter_id = parameter$parameter_id[hit], group_id = i, stringsAsFactors = FALSE)
+})
+parameter_group_map <- do.call(rbind, map_rows)
+# Number of parameters in each group
+counts <- table(factor(parameter_group_map$group_id, levels = parameter_group$group_id))
+parameter_group$n_parameters <- as.integer(counts)
+for (i in seq_len(nrow(parameter_group)))
+  log_step("param_group", parameter_group$group_name[i], parameter_group$n_parameters[i], parameter_group$rule[i])
+```
+
+```{r}
+#| label: s03-view-parameter-groups
+# Groups and their sizes
+parameter_group
+```
+
+::: {.callout-note title="Finding"}
+`r nrow(parameter_group)` groups were created, with `r nrow(parameter_group_map)` parameter–group links in total.
+:::
+
+::: {.callout-warning title="Problem found"}
+Group membership is based on name patterns and procedures. It was not checked by hand for every parameter, so a few parameters may be in the wrong group or missing from a group.
+:::
+
+## 5. Disease Information
+
+Some rows of the disease file list several genotype IDs in one cell, separated by `|` (for example, `MGI:1|MGI:2`). A cell with several values breaks the first normal form and cannot be queried easily, so these lists are split into one row per genotype. Rows with an invalid DOID, HGNC or MGI ID are removed and logged. The file is then split into separate tables for diseases, human genes and gene–disease links.
+
+```{r}
+#| label: s03-disease-information
+# Check this is the 2026 MGI disease report
+if (!startsWith(readLines(f_disease, n = 1), "#"))
+  stop(f_disease, " is the OLD disease file - use the 2026 MGI report (starts with '#' comment lines)")
+# Read the disease file and name its 8 columns
+dis <- read.delim(f_disease, header = FALSE, comment.char = "#", quote = "",
+                  colClasses = "character", na.strings = character(0))
+if (ncol(dis) != 8) stop("Disease file: expected 8 columns, found ", ncol(dis))
+names(dis) <- c("human_symbol", "human_name", "hgnc_id", "disease_name", "doid",
+                "genotype_ids", "mouse_symbol", "mgi_id")
+dis <- tidy(dis, "disease")
+# Remove exact duplicate rows
+d <- duplicated(dis)
+if (any(d)) { dis <- dis[!d, ]; log_step("disease", "duplicates", sum(d), "exact duplicate rows removed") }
+
+# Remove rows with an invalid DOID, HGNC or MGI ID
+for (chk in list(c("doid", "^DOID:[0-9]+$"), c("hgnc_id", "^HGNC:[0-9]+$"), c("mgi_id", "^MGI:[0-9]+$"))) {
+  bad <- !is.na(dis[[chk[1]]]) & !grepl(chk[2], dis[[chk[1]]])
+  if (any(bad)) { dis <- dis[!bad, ]; log_step("disease", "invalid ID", sum(bad), paste(chk[1], "bad format - row removed")) }
+}
+
+# Disease table: one row per DOID
+disease <- unique(dis[c("doid", "disease_name")])
+if (anyDuplicated(disease$doid)) stop("A DOID has more than one name")
+disease <- disease[order(disease$doid), ]
+
+# Human gene table: one row per HGNC ID
+human_gene <- unique(dis[c("hgnc_id", "human_symbol", "human_name", "mgi_id")])
+check_pk(human_gene, "hgnc_id", "human_gene")
+
+# Gene-disease link table: one row per mouse gene and disease
+pairs <- unique(dis[c("mgi_id", "doid")])
+pairs <- pairs[order(pairs$mgi_id, pairs$doid), ]
+gene_disease <- data.frame(gene_disease_id = seq_len(nrow(pairs)), pairs, row.names = NULL)
+
+# Genotype IDs: pipe-separated list in ONE cell -> one row each (first normal form)
+has_g <- !is.na(dis$genotype_ids)
+gl    <- strsplit(dis$genotype_ids[has_g], "|", fixed = TRUE)
+geno  <- data.frame(mgi_id = rep(dis$mgi_id[has_g], lengths(gl)),
+                    doid   = rep(dis$doid[has_g], lengths(gl)),
+                    genotype_id = trimws(unlist(gl)), stringsAsFactors = FALSE)
+geno  <- geno[grepl("^MGI:[0-9]+$", geno$genotype_id), ]
+geno$gene_disease_id <- gene_disease$gene_disease_id[match(paste(geno$mgi_id, geno$doid),
+                                                           paste(gene_disease$mgi_id, gene_disease$doid))]
+disease_model_genotype <- unique(geno[c("gene_disease_id", "genotype_id")])
+log_step("disease", "1NF split", nrow(disease_model_genotype),
+         sprintf("pipe-separated genotype lists in %d rows split into one row per genotype", sum(has_g)))
+log_step("disease", "normalised", nrow(dis),
+         sprintf("%d diseases, %d human genes, %d gene-disease links", nrow(disease), nrow(human_gene), nrow(gene_disease)))
+```
+
+```{r}
+#| label: s03-view-disease-information
+# Examples of genotype lists before splitting
+head(dis$genotype_ids[grepl("|", dis$genotype_ids, fixed = TRUE)], 3)
+```
+
+::: {.callout-note title="Finding"}
+The disease file gives `r nrow(disease)` diseases, `r nrow(human_gene)` human genes and `r nrow(gene_disease)` gene–disease links. Splitting the genotype lists produced `r nrow(disease_model_genotype)` genotype rows.
+:::
+
+## 6. Gene Table
+
+The `gene` table has one row per MGI ID, combining the genes in the IMPC data with the extra genes in the disease file. `in_impc_data` marks which genes were actually tested by the IMPC. Where the two sources give a different symbol for the same gene, the IMPC symbol is kept and the conflict is logged.
+
+```{r}
+#| label: s03-gene
+# Genes in the IMPC data
+g1 <- unique(clean[!is.na(clean$gene_accession_id), c("gene_accession_id", "gene_symbol")])
+names(g1) <- c("mgi_id", "gene_symbol")
+# Genes in the disease file
+g2 <- unique(dis[c("mgi_id", "mouse_symbol")]); names(g2) <- c("mgi_id", "gene_symbol")
+# Combine: IMPC genes plus disease-only genes
+gene <- rbind(g1, g2[!g2$mgi_id %in% g1$mgi_id, ])
+# Genes in both sources whose symbols differ
+both <- merge(g1, g2, by = "mgi_id")
+diff_sym <- both$gene_symbol.x != both$gene_symbol.y
+if (any(diff_sym)) log_step("gene", "conflict", sum(diff_sym), "symbol differs between IMPC data and MGI report (IMPC kept)")
+# Mark which genes were tested by the IMPC, then check the primary key
+gene$in_impc_data <- gene$mgi_id %in% g1$mgi_id
+gene <- gene[order(gene$mgi_id), ]
+check_pk(gene, "mgi_id", "gene")
+log_step("gene", "normalised", nrow(gene),
+         sprintf("%d genes in IMPC data + %d disease-only genes", sum(gene$in_impc_data), sum(!gene$in_impc_data)))
+```
+
+::: {.callout-note title="Finding"}
+The table has `r nrow(gene)` genes: `r sum(gene$in_impc_data)` tested by the IMPC and `r sum(!gene$in_impc_data)` that only appear in the disease file. `r sum(diff_sym)` genes had a different symbol in the two sources.
+:::
+
+## 7. Homology (Bespoke Task)
+
+Following the task instructions, a mouse gene is kept only if it has a mouse Ensembl ID and at least one human or macaque homolog. The export lists every human match alongside every macaque match of a gene, so the same pair appears many times; splitting it by species stores each pair once. Species are stored in their own table, so more species can be added later without changing the other tables.
+
+```{r}
+#| label: s03-homology-bespoke-task
+# Read the BioMart export and give its 12 columns short names
+hom <- read.delim(f_homology, quote = "", colClasses = "character",
+                  na.strings = character(0), check.names = FALSE)
+if (ncol(hom) != 12) stop("Homology file: expected 12 columns, found ", ncol(hom))
+names(hom) <- c("mouse_id", "h_id", "h_name", "h_lca", "h_type", "h_pid",
+                "mouse_name", "m_id", "m_name", "m_lca", "m_type", "m_pid")
+n_raw <- nrow(hom)
+hom <- tidy(hom, "homology")
+
+# Remove rows without a valid mouse Ensembl ID; set invalid homolog IDs to NA
+bad <- !grepl("^ENSMUSG[0-9]{11}$", hom$mouse_id)
+if (any(bad)) { hom <- hom[!bad, ]; log_step("homology", "invalid ID", sum(bad), "mouse Ensembl ID missing/invalid - row removed") }
+for (chk in list(c("h_id", "^ENSG[0-9]{11}$"), c("m_id", "^ENSMMUG[0-9]{11}$"))) {
+  bad <- !is.na(hom[[chk[1]]]) & !grepl(chk[2], hom[[chk[1]]])
+  if (any(bad)) { hom[[chk[1]]][bad] <- NA; log_step("homology", "invalid ID", sum(bad), paste(chk[1], "bad format -> NA")) }
+}
+
+# Instructions: keep a mouse gene only if it has a mouse Ensembl ID AND >= 1 homology match
+no_match <- is.na(hom$h_id) & is.na(hom$m_id)
+log_step("homology", "filter", sum(no_match),
+         "rows with no human or macaque homolog removed (bespoke instructions)")
+hom <- hom[!no_match, ]
+
+# The export is a cross product: every human match x every macaque match of a gene.
+# Splitting by species and removing duplicates stores each relationship once.
+split_species <- function(id, name, lca, type, pid) {
+  x <- unique(data.frame(mouse_ensembl_id = hom$mouse_id, homolog_ensembl_id = hom[[id]],
+                         homolog_name = hom[[name]], homology_type = hom[[type]],
+                         percent_identity = suppressWarnings(as.numeric(hom[[pid]])),
+                         last_common_ancestor = hom[[lca]], stringsAsFactors = FALSE))
+  x[!is.na(x$homolog_ensembl_id), ]
+}
+hh <- split_species("h_id", "h_name", "h_lca", "h_type", "h_pid")
+mm <- split_species("m_id", "m_name", "m_lca", "m_type", "m_pid")
+log_step("homology", "normalised", n_raw,
+         sprintf("cross-product export split into %d mouse-human and %d mouse-macaque pairs", nrow(hh), nrow(mm)))
+
+# Sanity checks on % identity and homology type
+bad_pid <- (!is.na(hh$percent_identity) & (hh$percent_identity < 0 | hh$percent_identity > 100))
+if (any(bad_pid)) stop("Human % identity outside 0-100")
+zero <- !is.na(mm$percent_identity) & mm$percent_identity == 0
+if (any(zero)) log_step("homology", "flag", sum(zero), "macaque matches with 0% identity kept (reported by Ensembl)")
+ok_types <- c("ortholog_one2one", "ortholog_one2many", "ortholog_many2many")
+if (any(!c(hh$homology_type, mm$homology_type) %in% ok_types)) stop("Unexpected homology type")
+
+# Species table, so more species can be added later
+species <- data.frame(species_id = 1:3,
+                      common_name = c("mouse", "human", "macaque"),
+                      scientific_name = c("Mus musculus", "Homo sapiens", "Macaca mulatta"),
+                      ensembl_prefix = c("ENSMUSG", "ENSG", "ENSMMUG"), stringsAsFactors = FALSE)
+
+# Mouse genes: symbol -> MGI ID only where the symbol is unambiguous
+mouse <- unique(hom[c("mouse_id", "mouse_name")])
+if (anyDuplicated(mouse$mouse_id)) stop("A mouse Ensembl ID has more than one name")
+amb <- unique(mouse$mouse_name[duplicated(mouse$mouse_name) & !is.na(mouse$mouse_name)])
+if (length(amb)) log_step("homology", "ambiguous", length(amb),
+                          "gene symbols shared by >1 mouse Ensembl ID - not linked to MGI")
+mgi_by_symbol <- setNames(gene$mgi_id, gene$gene_symbol)
+mgi_by_symbol <- mgi_by_symbol[!duplicated(names(mgi_by_symbol))]
+mouse_mgi <- ifelse(is.na(mouse$mouse_name) | mouse$mouse_name %in% amb, NA,
+                    unname(mgi_by_symbol[mouse$mouse_name]))
+log_step("homology", "link", sum(!is.na(mouse_mgi)),
+         sprintf("of %d mouse Ensembl genes linked to an MGI ID by symbol (%d of them in the IMPC data)",
+                 nrow(mouse), sum(mouse_mgi %in% gene$mgi_id[gene$in_impc_data])))
+
+# Human and macaque genes, one name per Ensembl ID
+hum_genes <- unique(hh[c("homolog_ensembl_id", "homolog_name")])
+mac_genes <- unique(mm[c("homolog_ensembl_id", "homolog_name")])
+fix_names <- function(x) {                                   # One name per ID
+  nm <- tapply(x$homolog_name, x$homolog_ensembl_id, mode_of)
+  data.frame(id = names(nm), name = unname(nm), stringsAsFactors = FALSE)
+}
+hum_genes <- fix_names(hum_genes); mac_genes <- fix_names(mac_genes)
+# Ensembl gene table for all three species
+ensembl_gene <- rbind(
+  data.frame(ensembl_gene_id = mouse$mouse_id, species_id = 1L, gene_name = mouse$mouse_name,
+             mgi_id = mouse_mgi, stringsAsFactors = FALSE),
+  data.frame(ensembl_gene_id = hum_genes$id, species_id = 2L, gene_name = hum_genes$name,
+             mgi_id = NA, stringsAsFactors = FALSE),
+  data.frame(ensembl_gene_id = mac_genes$id, species_id = 3L, gene_name = mac_genes$name,
+             mgi_id = NA, stringsAsFactors = FALSE))
+check_pk(ensembl_gene, "ensembl_gene_id", "ensembl_gene")
+
+# Homology table: one row per mouse-homolog pair
+homology <- rbind(hh, mm)[c("mouse_ensembl_id", "homolog_ensembl_id", "homology_type",
+                            "percent_identity", "last_common_ancestor")]
+check_pk(homology, c("mouse_ensembl_id", "homolog_ensembl_id"), "homology")
+log_step("homology", "summary", nrow(homology),
+         sprintf("homology rows for %d mouse genes (%d human, %d macaque genes)",
+                 nrow(mouse), nrow(hum_genes), nrow(mac_genes)))
+```
+
+```{r}
+#| label: s03-view-homology-bespoke-task
+# Rows before and after
+c(raw_rows = n_raw, homology_rows = nrow(homology))
+```
+
+::: {.callout-note title="Finding"}
+The `r n_raw` rows of the export were reduced to `r nrow(homology)` homology pairs (`r nrow(hh)` mouse–human and `r nrow(mm)` mouse–macaque) for `r nrow(mouse)` mouse genes. `r sum(no_match)` rows had no homolog and were removed, as the instructions require.
+:::
+
+## 8. Query Genes
+
+The collaborator's file lists the genes of interest. Each one is linked to its MGI ID, and we counted how many analyses it has in the cleaned data.
+
+```{r}
+#| label: s03-query-genes
+# Read the query genes, removing spaces and blank lines
+q <- trimws(readLines(f_query, warn = FALSE))
+q <- unique(q[nzchar(q)])
+# Link each gene to its MGI ID
+query_gene <- data.frame(gene_symbol = q,
+                         mgi_id = gene$mgi_id[match(q, gene$gene_symbol)],
+                         stringsAsFactors = FALSE)
+# Count each gene's analyses in the cleaned data
+query_gene$n_analyses <- vapply(query_gene$mgi_id, function(m)
+  sum(clean$gene_accession_id == m, na.rm = TRUE), integer(1))
+for (i in seq_len(nrow(query_gene)))
+  log_step("query", query_gene$gene_symbol[i], query_gene$n_analyses[i],
+           paste("analyses; MGI ID", query_gene$mgi_id[i]))
+```
+
+```{r}
+#| label: s03-view-query-genes
+# Genes of interest and number of analyses
+query_gene
+```
+
+::: {.callout-warning title="Problem found"}
+The file lists `r nrow(query_gene)` genes (`r paste(query_gene$gene_symbol, collapse = ", ")`), although the brief mentions four. \[Check with your group which number to use.\]
+:::
+
+## 9. Save
+
+Each table is saved as a separate CSV file in `db_tables/`, ready to be loaded into MySQL, together with the change log.
+
+```{r}
+#| label: s03-save
+# Save every table to db_tables/
+write_table(procedure, "procedure")
+write_table(parameter, "parameter")
+write_table(parameter_variant, "parameter_variant")
+write_table(parameter_group, "parameter_group")
+write_table(parameter_group_map, "parameter_group_map")
+write_table(gene, "gene")
+write_table(disease, "disease")
+write_table(human_gene, "human_gene")
+write_table(gene_disease, "gene_disease")
+write_table(disease_model_genotype, "disease_model_genotype")
+write_table(species, "species")
+write_table(ensembl_gene, "ensembl_gene")
+write_table(homology, "homology")
+write_table(query_gene, "query_gene")
+# Save the change log
+write.csv(change_log, "metadata_cleaning_log.csv", row.names = FALSE)
+message("\nDone - ", nrow(change_log), " log entries in metadata_cleaning_log.csv")
+```
+
+::: {.callout-note title="Finding"}
+14 tables were saved in `db_tables/`, and `r nrow(change_log)` changes were recorded in `metadata_cleaning_log.csv`.
+:::
+
+## 10. Reproducibility Record
+
+The MD5 hash acts as a fingerprint of each output file: if the script is run again on the same input and produces the same hashes, the outputs are identical. The R session details are recorded so the same package versions can be used again.
+
+```{r}
+#| label: s03-reproducibility-record
+tools::md5sum(c("db_tables/procedure.csv", "db_tables/parameter.csv", "db_tables/parameter_group_map.csv", "db_tables/gene.csv", "db_tables/gene_disease.csv", "db_tables/homology.csv", "metadata_cleaning_log.csv"))
+sessionInfo()
+```
+
+## 11. Summary and Next Step
+
+The five supporting files have been cleaned and turned into 14 normalised tables in `db_tables/`, including the parameter groups the collaborator asked for. Every table has a checked primary key, and every change is recorded in `metadata_cleaning_log.csv`.
+
+::: {.callout-tip title="Next step"}
+In Step 4 (`04_split`), the cleaned analysis data is split into the last two tables, `analysis` and `lacz_expression`, which link to the `gene` and `parameter` tables created here.
+:::
