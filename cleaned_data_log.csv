@@ -36,7 +36,7 @@
 "3 consistent","gene_accession_id",1,"repaired to MGI:<digits> (e.g. ':2142346' -> 'MGI:2142346')"
 "3 consistent","gene_symbol",1993,"one symbol per MGI ID (2855 of 2855 genes confirmed by reference files)"
 "3 consistent","allele_symbol",5878,"prefix set to official gene symbol; 4452 malformed suffixes repaired from valid alleles"
-"3 consistent","mouse_strain",0,"all values checked against the 9 SOP strains"
+"3 consistent","strain_name",0,"all values checked against the 9 SOP strains"
 "3 consistent","mouse_life_stage",3175,"case/punctuation/junk characters removed and mapped to the 7 SOP stages"
 "3 consistent","parameter_id",5581,"upper case, junk characters and extra underscores removed, ID rebuilt"
 "3 consistent","parameter_name",3,"encoding error fixed ('NaÃÂ¯ve' -> 'Naïve')"

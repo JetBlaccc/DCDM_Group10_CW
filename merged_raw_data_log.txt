@@ -1,21 +1,21 @@
-source dir      : \\wsl.localhost\Ubuntu\home\jjetxyz\kcl\dcdm\DCDM_Group10\group10_data
+source dir      : /Users/aamaireh/Desktop/IMPC_Group10/group10_data
 output          : merged_raw_data.csv
 files read      : 28495
 rows written    : 28495
-columns         : 21 (analysis_id,gene_accession_id,gene_symbol,mouse_strain,mouse_life_stage,parameter_id,parameter_name,pvalue,allele_symbol,lacz_blood,lacz_brain,lacz_colon,lacz_eye,lacz_heart,lacz_kidney,lacz_liver,lacz_lung,lacz_skeletal_muscle,lacz_skin,lacz_vascular_system,source_file)
+columns         : 21 (analysis_id,gene_accession_id,gene_symbol,strain_name,mouse_life_stage,parameter_id,parameter_name,pvalue,allele_symbol,lacz_blood,lacz_brain,lacz_colon,lacz_eye,lacz_heart,lacz_kidney,lacz_liver,lacz_lung,lacz_skeletal_muscle,lacz_skin,lacz_vascular_system,source_file)
 log entries     : 78
 duplicate ids   : 70
-seconds         : 564.3
+seconds         : 12.5
 
 file	issue	detail
 an1002617512.csv	REPAIRED missing comma	"lacz_kidney""expression"
-an3265725976.csv	RENAMED key	parameterName -> parameter_name
-an3797698600.csv	SKIPPED line with no key	"no expression"
-an7422024571.csv	RENAMED key	laczEye -> lacz_eye
-an7422024571.csv	RENAMED key	laczJeart -> lacz_heart
-an9995988284.csv	RENAMED key	Mouse_life_stage -> mouse_life_stage
-an9995988284.csv	RENAMED key	analysisId -> analysis_id
-an9998901984.csv	analysis_id differs from filename	an99989019849999999999999999999
+an3265725976.csv	RENAMED field	parameterName -> parameter_name
+an3797698600.csv	SKIPPED line with no field name	"no expression"
+an7422024571.csv	RENAMED field	laczEye -> lacz_eye
+an7422024571.csv	RENAMED field	laczJeart -> lacz_heart
+an9995988284.csv	RENAMED field	Mouse_life_stage -> mouse_life_stage
+an9995988284.csv	RENAMED field	analysisId -> analysis_id
+an9998901984.csv	analysis_id differs from file name	an99989019849999999999999999999
 ALL	DUPLICATE analysis_id (2 rows)	an1082731986
 ALL	DUPLICATE analysis_id (2 rows)	an1432214852
 ALL	DUPLICATE analysis_id (2 rows)	an1583027420
