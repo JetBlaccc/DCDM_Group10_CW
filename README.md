@@ -22,7 +22,7 @@ The raw files and supporting files are already in this repository. Clone it, ope
 | 3 | `03_metadata_cleaning.qmd` | `cleaned_data.csv` + supporting files | Cleans supporting files, builds parameter groups | `db_tables/`, `metadata_cleaning_log.csv` |
 | 4 | `04_split.qmd` | `cleaned_data.csv` + `db_tables/` | Builds analysis and lacz_expression tables | `db_tables/`, `split_log.csv` |
 | 5 | `impc_group10_sql/` | `db_tables/` | Creates and loads the database | dump file |
-| 6 | [⚠ TODO: Shiny folder] | MySQL database | Dashboard | — |
+| 6 | `rshiny/` | MySQL database | Dashboard | `shiny::runApp("DCDM_RShiny.R")` |
 
 Then load the database and start the dashboard (replace `your_user` with your MySQL username):
 
