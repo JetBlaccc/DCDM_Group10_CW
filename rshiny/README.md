@@ -1,4 +1,4 @@
-# RShiny app (Group 10)
+# DCDM Coursework RShiny Dashboard (Group 10)
 
 RShiny dashboard for the DCDM Project
 
