@@ -2,7 +2,7 @@
 
 Cleans 28,000+ International Mouse Phenotyping Consortium (IMPC) knockout-mouse analysis files, stores them in a MySQL database with procedure, disease and homology data, and displays them in an R Shiny dashboard.
 
-Created: 2026-11-16 · Last updated: 2026-11-26
+Created: 2026-11-16 · Last updated: 2026-11-27
 
 ## Data
 
