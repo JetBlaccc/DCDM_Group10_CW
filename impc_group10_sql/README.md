@@ -1,7 +1,7 @@
 # impc_group10 – MySQL database (Group 10, 7BBG1003)
 
 Builds the normalised MySQL database from the cleaned CSVs in `db_tables/`
-(output of the cleaning scripts and `CW2_impc_split.qmd`).
+(output of the cleaning scripts and `04_impc_split.qmd`).
 
 ## Files
 
@@ -18,10 +18,10 @@ Requirements: MySQL 8.0.16+, and the `db_tables/` folder (16 CSVs) next to these
 
 **Terminal**
 ```bash
-cd <folder containing db_tables/ and these .sql files>
-mysql -u root -p < schema.sql
-mysql --local-infile=1 -u root -p < load.sql
-mysql -u root -p < queries.sql
+cd DCDM_Group10
+mysql -u root -p < impc_group10_sql/schema.sql
+mysql --local-infile=1 -u root -p < impc_group10_sql/load.sql
+mysql -u root -p < impc_group10_sql/queries.sql
 ```
 
 **DBeaver**
