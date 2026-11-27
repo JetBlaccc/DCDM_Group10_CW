@@ -22,17 +22,18 @@ The raw files and supporting files are already in this repository. Clone it, ope
 | 3 | `03_metadata_cleaning.qmd` | `cleaned_data.csv` + supporting files | Cleans supporting files, builds parameter groups | `db_tables/`, `metadata_cleaning_log.csv` |
 | 4 | `04_split.qmd` | `cleaned_data.csv` + `db_tables/` | Builds analysis and lacz_expression tables | `db_tables/`, `split_log.csv` |
 | 5 | `impc_group10_sql/` | `db_tables/` | Creates and loads the database | dump file |
-| 6 | `rshiny/` | MySQL database | Dashboard | `shiny::runApp("DCDM_RShiny.R")` |
+| 6 | `rshiny/` | MySQL database | Dashboard | `shiny::runApp("rshiny/DCDM_RShiny.R")` |
 
 Then load the database and start the dashboard (replace `your_user` with your MySQL username):
 
 ```bash
 mysql -u your_user -p -e "CREATE DATABASE impc_group10;"
-mysql -u your_user -p impc_group10 < impc_group10_sql/[⚠ TODO: dump file name].sql
+mysql -u your_user -p impc_group10 < impc_group10_sql/impc_group10_dump.sql
 ```
 
+Before starting the dashboard, type your MySQL password into `rshiny/db_config.R`.
 ```r
-shiny::runApp("[⚠ TODO: Shiny folder]")
+shiny::runApp("rshiny/DCDM_RShiny.R")
 ```
 
 ## Data management approach
@@ -40,7 +41,8 @@ shiny::runApp("[⚠ TODO: Shiny folder]")
 - Raw files in `group10_data/` are never edited; all fixes are made in code.
 - Every step logs what it changed and how many rows were affected.
 - Values are only corrected when the correction is supported by the source or reference data; otherwise they are stored as `NA` in R and imported as `NULL` in MySQL.
-- Field names follow the IMPC SOP (e.g. `strain_name`, `parameter_id`, `pvalue`).
+- Field names follow the data (e.g. `mouse_strain`, `parameter_id`, `pvalue`). SOP aliases such as `strain_name` are renamed during the merge.
+- Where the SOP maximum lengths are shorter than its own allowed values (eg. `mouse_strain` 25 vs 26 characters, LacZ 19 vs 20), column sizes were set from the real data so no records are lost.
 - Analysis keys are checked in R before loading; MySQL enforces the rest.
 - Steps 0–4 use base R only and record `sessionInfo()` and output checksums, so re-runs can be compared.
 
