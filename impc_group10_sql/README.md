@@ -1,4 +1,4 @@
-# impc_group10 – MySQL database (Group 10, 7BBG1003)
+# impc_group10 - MySQL database (Group 10, 7BBG1003)
 
 Builds the normalised MySQL database from the cleaned CSVs in `db_tables/`
 (output of the cleaning scripts and `04_split.qmd`).
@@ -46,8 +46,8 @@ mysql -u root -p impc_group10 < impc_group10_sql/impc_group10_dump.sql
 
 ## Notes
 
-- The procedures table is called **`impc_procedure`** (`procedure` is a reserved word in MySQL) – use this name in RShiny queries.
-- `load.sql` starts with `SET GLOBAL local_infile = 1;` – this resets whenever MySQL restarts.
+- The procedures table is called **`impc_procedure`** (`procedure` is a reserved word in MySQL) - use this name in RShiny queries.
+- `load.sql` starts with `SET GLOBAL local_infile = 1;` - this resets whenever MySQL restarts.
 - `NA` in the CSVs is loaded as real `NULL`; `TRUE`/`FALSE` become 1/0.
 - Significance threshold for the queries is `@alpha = 0.05` (set once in `queries.sql`; `q8_gene_summary` is fixed at 0.05).
 - Each query in `queries.sql` has a `-- title:` comment, so DBeaver names its result tab (Q1 gene overview, Q2 all results, …).
