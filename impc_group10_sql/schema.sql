@@ -1,24 +1,12 @@
--- =============================================================================
--- schema.sql  -  IMPC Group 10 database (MySQL 8.0.16+)
--- Builds the empty database for the CSVs in db_tables/ (16 tables).
--- Follows the group plan "Loading into MySQL":
---   * types sized from the real maximum lengths (not the SOP limits)
---   * parents before children, composite PKs on the 4 link tables
---   * nullable FKs: analysis.parameter_id, parameter.procedure_id, ensembl_gene.mgi_id
---   * utf8mb4 (so "Naive" with the diaeresis survives) + InnoDB (FKs enforced)
---   * extras: indexes for Shiny, CHECK constraints for SOP values, views
---
--- Run in DBeaver: open, attach to the connection, Execute SQL Script (Alt/Option+X)
--- or terminal:    mysql -u root -p < schema.sql
--- =============================================================================
+-- schema.sql
+-- creates the impc_group10 database (16 tables + 4 views)
+-- run this first, then load.sql
 
 DROP DATABASE IF EXISTS impc_group10;
 CREATE DATABASE impc_group10 CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE impc_group10;
 
--- -----------------------------------------------------------------------------
--- PARENT TABLES
--- -----------------------------------------------------------------------------
+-- parent tables
 CREATE TABLE species (
   species_id       INT          NOT NULL,
   common_name      VARCHAR(20)  NOT NULL,
@@ -28,7 +16,6 @@ CREATE TABLE species (
   UNIQUE KEY uq_species_name (common_name)
 ) ENGINE = InnoDB COMMENT = 'Species in the homology data; add a row per new species';
 
--- `procedure` is a reserved word in MySQL, so the table is impc_procedure
 CREATE TABLE impc_procedure (
   procedure_id    INT           NOT NULL,
   procedure_name  VARCHAR(100)  NOT NULL,
@@ -96,9 +83,7 @@ CREATE TABLE parameter (
   CONSTRAINT chk_procedure_source CHECK (procedure_source IN ('catalogue', 'inferred_from_id_code'))
 ) ENGINE = InnoDB COMMENT = 'One row per parameter_id';
 
--- -----------------------------------------------------------------------------
--- CHILD TABLES
--- -----------------------------------------------------------------------------
+-- child tables
 CREATE TABLE analysis (
   analysis_id              VARCHAR(15)   NOT NULL,
   mgi_id                   VARCHAR(15)   NOT NULL,
@@ -195,9 +180,7 @@ CREATE TABLE query_gene (
   CONSTRAINT fk_query_gene FOREIGN KEY (mgi_id) REFERENCES gene (mgi_id)
 ) ENGINE = InnoDB COMMENT = 'The collaborator genes of interest';
 
--- =============================================================================
--- VIEWS (ready-made joins for the dashboard and the collaborator)
--- =============================================================================
+-- view tables
 CREATE VIEW v_analysis_detail AS
 SELECT a.analysis_id, a.mgi_id, g.gene_symbol, a.allele_symbol,
        a.mouse_strain, a.mouse_life_stage,

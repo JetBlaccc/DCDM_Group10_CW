@@ -1,33 +1,18 @@
--- =============================================================================
--- queries.sql  -  the collaborator's questions for the Group 10 genes of interest
---   Cep83, Rimoc1, Aqp11, Itga8, Ppm1m   (stored in the query_gene table)
---
--- Database: impc_group10 (run schema.sql and load.sql first)
--- Run in DBeaver: attach to the connection, Execute SQL Script (Alt/Option+X).
---
--- Part A creates one named VIEW per question. Part B reads each view.
--- Each query in Part B has a '-- title:' comment, which DBeaver uses as the
--- name of its result tab (Q1 gene overview, Q2 all results, ...).
--- The views can be re-used by the collaborator and by the RShiny app.
---
--- Significance threshold: set once in @alpha (Part B). The views hold every
--- p-value, so changing @alpha changes all answers except q8 (fixed at 0.05,
--- because MySQL views cannot use variables).
--- =============================================================================
+-- queries.sql
+-- queries for the collaborator's genes of interest (Cep83, Rimoc1, Aqp11, Itga8, Ppm1m)
+-- run after schema.sql and load.sql
+-- part A makes a view for each question, part B shows the results
+
 USE impc_group10;
 
--- =============================================================================
--- PART A - one view per collaborator question
--- =============================================================================
-
--- Q1 base: every analysis of every gene of interest
+-- Part A - views
+-- Q1: all analyses of the genes of interest
 CREATE OR REPLACE VIEW q1_gene_overview AS
 SELECT q.gene_symbol, q.mgi_id, a.analysis_id, a.parameter_id, a.pvalue
 FROM query_gene q
 LEFT JOIN analysis a ON a.mgi_id = q.mgi_id;
 
--- Q2: ALL information per analysis - parameter, parameter group(s), procedure,
---     p-value, allele, strain, life stage, and whether the gene has a disease link
+-- Q2: all information for each analysis
 CREATE OR REPLACE VIEW q2_all_results AS
 SELECT v.gene_symbol,
        v.allele_symbol,
@@ -49,7 +34,7 @@ SELECT gene_symbol, parameter_name, parameter_groups, procedure_name,
        mouse_life_stage, pvalue
 FROM q2_all_results;
 
--- Q4 base: each analysis of a gene of interest with each group its parameter belongs to
+-- Q4: parameter groups of each analysis
 CREATE OR REPLACE VIEW q4_affected_body_systems AS
 SELECT q.gene_symbol, g.group_name, a.pvalue
 FROM query_gene q
@@ -57,28 +42,28 @@ JOIN analysis a             ON a.mgi_id = q.mgi_id
 JOIN parameter_group_map m  ON m.parameter_id = a.parameter_id
 JOIN parameter_group g      ON g.group_id = m.group_id;
 
--- Q5: human disease associations (Disease Ontology) + number of MGI mouse models
+-- Q5: human diseases linked to each gene
 CREATE OR REPLACE VIEW q5_disease_links AS
 SELECT q.gene_symbol, d.human_symbol, d.hgnc_id, d.doid, d.disease_name,
        d.n_mouse_model_genotypes
 FROM query_gene q
 LEFT JOIN v_gene_disease d ON d.mgi_id = q.mgi_id;
 
--- Q6: bespoke task - homologs in human and macaque
+-- Q6: human and macaque homologs (bespoke task)
 CREATE OR REPLACE VIEW q6_homologs AS
 SELECT q.gene_symbol, h.mouse_ensembl_id, h.species, h.homolog_ensembl_id,
        h.homolog_symbol, h.homology_type, h.percent_identity, h.last_common_ancestor
 FROM query_gene q
 LEFT JOIN v_gene_homology h ON h.mgi_id = q.mgi_id;
 
--- Q7 base: LacZ reporter result of every analysis, per tissue
+-- Q7: lacz expression per tissue
 CREATE OR REPLACE VIEW q7_lacz_expression AS
 SELECT q.gene_symbol, l.tissue, l.expression
 FROM query_gene q
 JOIN analysis a         ON a.mgi_id = q.mgi_id
 JOIN lacz_expression l  ON l.analysis_id = a.analysis_id;
 
--- Q8: one-line summary per gene (significance fixed at p < 0.05)
+-- Q8: summary of each gene (significance fixed at p < 0.05)
 CREATE OR REPLACE VIEW q8_gene_summary AS
 SELECT q.gene_symbol,
        (SELECT COUNT(*) FROM analysis a
@@ -97,9 +82,8 @@ SELECT q.gene_symbol,
           FROM v_gene_homology h WHERE h.mgi_id = q.mgi_id)            AS homologs
 FROM query_gene q;
 
--- =============================================================================
--- PART B - the answers (one result tab each, named after the view)
--- =============================================================================
+-- PART B - answers (one result tab each, named after the view)
+-- p value threshold
 SET @alpha = 0.05;
 
 -- Q1. How many analyses per gene, and how many reach significance?
@@ -151,7 +135,6 @@ FROM q6_homologs
 ORDER BY gene_symbol, species;
 
 -- Q7. LacZ: in which tissues is each gene expressed?
---     ('No data' and 'tissue not available' are left out)
 -- title: Q7 LacZ expression
 SELECT gene_symbol,
        tissue,
