@@ -57,6 +57,7 @@ Standard identifiers (MGI for mouse genes, DOID for diseases, HGNC for human gen
 ## Software requirements
 
 R [⚠ TODO: version], Quarto [⚠ TODO: version], MySQL [⚠ TODO: version]; Shiny packages: [⚠ TODO: list with versions]. Operating system: [⚠ TODO: e.g. macOS 15 / CREATE HPC].
+R 4.6.1, Quarto 1.10.18, MySQL 9.7.2; Shiny packages: shiny 1.15.0, ggplot2 4.0.4, DBI 1.3.0, RMySQL 0.11.3. Operating system: macOS 15 / WSL Ubuntu.
 
 ## Data sources and documentation
 
