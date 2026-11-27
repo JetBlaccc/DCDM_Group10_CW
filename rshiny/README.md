@@ -8,7 +8,7 @@ RShiny dashboard for the DCDM Project
 - **Clusters**: genes clustered on their parameter group scores (ward hierarchical clustering), shown as a pca plot and heatmap
 
 ## How to run
-1. Build the database (see `sql/README.md`)
+1. Build the database (see `impc_group10_sql/README.md`)
 2. Open `db_config.R` and type in your mysql login
 3. Install the packages
    ```r
