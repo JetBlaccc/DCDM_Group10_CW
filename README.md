@@ -1,4 +1,4 @@
-# DCDM Group 10: IMPC database and dashboard
+# DCDM Coursework - Group 10
 
 Cleans 28,000+ International Mouse Phenotyping Consortium (IMPC) knockout-mouse analysis files, stores them in a MySQL database with procedure, disease and homology data, and displays them in an R Shiny dashboard.
 
