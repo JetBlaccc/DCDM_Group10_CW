@@ -41,7 +41,6 @@ shiny::runApp("rshiny/DCDM_RShiny.R")
 - Raw files in `group10_data/` are never edited; all fixes are made in code.
 - Every step logs what it changed and how many rows were affected.
 - Values are only corrected when the correction is supported by the source or reference data; otherwise they are stored as `NA` in R and imported as `NULL` in MySQL.
-- Field names follow the data (e.g. `mouse_strain`, `parameter_id`, `pvalue`). SOP aliases such as `strain_name` are renamed during the merge.
 - Where the SOP maximum lengths are shorter than its own allowed values (eg. `mouse_strain` 25 vs 26 characters, LacZ 19 vs 20), column sizes were set from the real data so no records are lost.
 - Analysis keys are checked in R before loading; MySQL enforces the rest.
 - Steps 0–4 use base R only and record `sessionInfo()` and output checksums, so re-runs can be compared.
