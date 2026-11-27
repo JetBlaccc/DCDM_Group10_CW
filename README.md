@@ -12,7 +12,7 @@ Created: 2026-11-16 · Last updated: 2026-11-26
 
 ## Running the pipeline
 
-The raw files and supporting files are already in this repository. Clone it, open `IMPC_Group10.Rproj` in RStudio, then render steps 0–4 in order (in RStudio, or `quarto render <file>`):
+The raw files and supporting files are already in this repository. Clone it, open `IMPC_Group10.Rproj` in RStudio, then render steps 0-4 in order (in RStudio, or `quarto render <file>`):
 
 | Step | File | Input | Purpose | Output |
 |---|---|---|---|---|
@@ -43,7 +43,7 @@ shiny::runApp("rshiny/DCDM_RShiny.R")
 - Values are only corrected when the correction is supported by the source or reference data; otherwise they are stored as `NA` in R and imported as `NULL` in MySQL.
 - Where the SOP maximum lengths are shorter than its own allowed values (eg. `mouse_strain` 25 vs 26 characters, LacZ 19 vs 20), column sizes were set from the real data so no records are lost.
 - Analysis keys are checked in R before loading; MySQL enforces the rest.
-- Steps 0–4 use base R only and record `sessionInfo()` and output checksums, so re-runs can be compared.
+- Steps 0-4 use base R only and record `sessionInfo()` and output checksums, so re-runs can be compared.
 
 ## FAIR principles
 
