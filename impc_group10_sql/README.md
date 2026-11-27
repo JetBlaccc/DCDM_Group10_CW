@@ -31,6 +31,7 @@ mysql -u root -p < impc_group10_sql/queries.sql
    e.g. `'/Users/<you>/DCDM_Group10_CW/db_tables/` (DBeaver needs absolute paths).
 3. Open each script, attach it to your connection, and run it as a script (Alt/Option+X):
    `schema.sql` → `load.sql` → `queries.sql`.
+   
 **Or restore from the dump**
 ```bash
 mysql -u root -p -e "CREATE DATABASE impc_group10;"
